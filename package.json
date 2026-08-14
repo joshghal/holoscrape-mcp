@@ -1,0 +1,22 @@
+{
+  "name": "holoscrape-mcp",
+  "version": "0.1.0",
+  "description": "Give an AI agent your own logged-in browser: HoloScrape's extraction engine over MCP, running locally.",
+  "type": "module",
+  "bin": {
+    "holoscrape-mcp": "index.mjs"
+  },
+  "files": [
+    "index.mjs",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/joshghal/holoscrape-mcp"
+  },
+  "keywords": ["mcp", "model-context-protocol", "browser", "scraping", "chrome-extension", "claude"]
+}
