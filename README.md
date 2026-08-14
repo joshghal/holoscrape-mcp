@@ -38,6 +38,24 @@ The alternative is a hosted relay that sees every page it reads. This process li
 `127.0.0.1`, and the pairing code is the only thing that can talk to it — printed once, typed once,
 checked before a socket is even allowed to open.
 
+## Tools
+
+| Tool | What it does |
+|---|---|
+| `current_page` | The tab the person has open right now, and whether it can be read. |
+| `search_open` | Turn plain words ("restaurants in cimahi") into a real search, opened in their browser. |
+| `tabs_list` | Every http(s) tab currently open. |
+| `tab_open` | Open a specific URL. |
+| `site_probe` | A cheap check, before committing to a run: is there a list, how many rows, how does it paginate. |
+| `page_study` | Every repeating structure on a tab, ranked with evidence — not one verdict, several candidates so the caller chooses. Flags page furniture (footers, filter sidebars) that a naive reading mistakes for the real list. |
+| `page_grow` | Press a load-more control or scroll, and report the record count before and after — the only honest way to answer "does this load more". |
+| `list_extract` | Start reading a list into a table, following its pages. Returns immediately; poll `run_status`. |
+| `run_status` | Progress on a run — including `waiting_for_user` when the site puts up a human check. |
+| `run_stop` | Stop a run early; keeps what it already read. |
+| `results_list` | Tables already extracted in this browser, newest first. |
+| `results_get` | Rows and columns from a saved table. |
+| `results_export` | Write a whole table to CSV in Downloads, for tables too big to read inline. |
+
 ## Try it without an agent
 
 ```
