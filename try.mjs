@@ -12,6 +12,7 @@
 //   node try.mjs get <resultId>                    the rows
 //   node try.mjs study <tabId>                     every candidate list, ranked, with evidence
 //   node try.mjs grow <tabId> [selector]           press it, or scroll, and count before/after
+//   node try.mjs state <tabId> [path]              the app's own store: no path lists what exists
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 
@@ -122,6 +123,28 @@ async function runGrow(tabId, selector) {
   show('page_grow', await callTool('page_grow', args));
 }
 
+// DISCOVERY IS A MENU, so print it as one — one line per source with its path, kind and size,
+// rather than the whole nested reply. The path is the only part you retype, so it goes last where
+// it can be copied off the end of the line. With a path, print the slice raw: at that point the
+// shape IS the answer.
+async function runState(tabId, at) {
+  if (at) { show(`page_state ${at}`, await callTool('page_state', { tabId, path: at })); return; }
+  const out = await callTool('page_state', { tabId });
+  if (out.__error) { show('page_state FAILED', out); return; }
+  console.log(`\n\x1b[1m${out.url || ''}\x1b[0m`);
+  console.log(`  ${(out.sources || []).length} source(s), ${out.globals?.added || 0} globals this app added,`
+    + ` ${out.redacted || 0} value(s) redacted\n`);
+  for (const s of out.sources || []) {
+    console.log(`  ${String(s.kind).padEnd(7)} ${s.entries == null ? '' : `${String(s.entries).padStart(4)} entries`}`
+      + `  ${s.via}\n        ${s.path}`);
+  }
+  if (out.webpack) {
+    show(`webpack — ${out.webpack.reachable ? `${out.webpack.modules} modules cached` : 'NOT reachable'}`
+      + `, read one with ${out.webpack.read}`, out.webpack);
+  }
+  console.log(`\n  ${out.tell}\n`);
+}
+
 // --- the command line itself -----------------------------------------------------------------
 // A LOOKUP, NOT A CHAIN. Eight `else if` branches were still a chain even once their bodies were
 // one-liners — reading it meant checking each condition in turn to find the one that matched, and
@@ -129,7 +152,7 @@ async function runGrow(tabId, selector) {
 // "what commands exist" a single flat list, and dispatch is "find the matching key", not "walk a
 // sequence of comparisons".
 const USAGE = 'commands: here | tabs | search <source> <query> | study <tabId> | grow <tabId> '
-  + '[selector] | extract <tabId> [pages] | get <resultId> | results';
+  + '[selector] | state <tabId> [path] | extract <tabId> [pages] | get <resultId> | results';
 
 const COMMANDS = {
   here: async () => show('current_page', await callTool('current_page')),
@@ -139,6 +162,7 @@ const COMMANDS = {
   extract: (rest) => runExtract(Number(rest[0]), Number(rest[1] || 0)),
   study: (rest) => runStudy(Number(rest[0])),
   grow: (rest) => runGrow(Number(rest[0]), rest[1]),
+  state: (rest) => runState(Number(rest[0]), rest.slice(1).join(' ')),
   get: async (rest) => show('results_get',
     await callTool('results_get', { resultId: rest[0], limit: Number(rest[1] || 10) })),
   results: async () => show('results_list', await callTool('results_list')),

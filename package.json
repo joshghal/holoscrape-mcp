@@ -8,6 +8,8 @@
   },
   "files": [
     "index.mjs",
+    "tools.mjs",
+    "guidance.mjs",
     "README.md"
   ],
   "engines": {
@@ -18,5 +20,12 @@
     "type": "git",
     "url": "https://github.com/joshghal/holoscrape-mcp"
   },
-  "keywords": ["mcp", "model-context-protocol", "browser", "scraping", "chrome-extension", "claude"]
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "browser",
+    "scraping",
+    "chrome-extension",
+    "claude"
+  ]
 }

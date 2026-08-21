@@ -32,6 +32,16 @@ Once paired, an agent can read whatever list is on a page you've allowed — a s
 directory listing, a table — and walk its pages. Nothing runs until you've explicitly allowed the
 site in the HoloScrape panel; an agent cannot grant that to itself.
 
+On a page with more than one scrollable region — a chat app's sidebar list beside an open
+conversation, a filter rail beside results — the automatic ranking favours the denser pane, which
+may not be the one you mean. The fix is two calls: `page_study` lists every candidate with its
+selector, and `list_extract` with that selector pinned reads exactly that pane:
+
+```
+page_study   { tabId: 12 }                                    → lists[1].selector: "aside.rail>div.chats…"
+list_extract { tabId: 12, selector: "aside.rail>div.chats…" } → grows and reads the sidebar, not the feed
+```
+
 ## Why local
 
 The alternative is a hosted relay that sees every page it reads. This process listens only on
@@ -42,19 +52,15 @@ checked before a socket is even allowed to open.
 
 | Tool | What it does |
 |---|---|
-| `current_page` | The tab the person has open right now, and whether it can be read. |
-| `search_open` | Turn plain words ("restaurants in cimahi") into a real search, opened in their browser. |
-| `tabs_list` | Every http(s) tab currently open. |
-| `tab_open` | Open a specific URL. |
-| `site_probe` | A cheap check, before committing to a run: is there a list, how many rows, how does it paginate. |
+| `current_page` | The tab the person has open right now, and whether it can be read. The place to start for "I have a page open, scrape it". |
+| `tabs_list` | Every http(s) tab currently open — for when `current_page` is not the one they meant. |
+| `tab_here` | Point a tab you already have at a URL, and wait until it is loaded. The navigation primitive. `search:` turns plain words into a real search; `newTab:true` opens a new tab instead, which nothing will ever close. |
 | `page_study` | Every repeating structure on a tab, ranked with evidence — not one verdict, several candidates so the caller chooses. Flags page furniture (footers, filter sidebars) that a naive reading mistakes for the real list. |
-| `page_grow` | Press a load-more control or scroll, and report the record count before and after — the only honest way to answer "does this load more". |
-| `list_extract` | Start reading a list into a table, following its pages. Returns immediately; poll `run_status`. |
-| `run_status` | Progress on a run — including `waiting_for_user` when the site puts up a human check. |
-| `run_stop` | Stop a run early; keeps what it already read. |
-| `results_list` | Tables already extracted in this browser, newest first. |
-| `results_get` | Rows and columns from a saved table. |
-| `results_export` | Write a whole table to CSV in Downloads, for tables too big to read inline. |
+| `list_extract` | Read the rows already on this page into a table, following its pages. The fast path, and the one to try first. Takes an optional `selector` naming the container, for pages with more than one scrollable region; a selector that matches nothing fails by name instead of silently falling back. |
+| `page_harvest` | A list page and the records behind its links — many pages, one call, no rows through the agent. Opens one page per record in parallel lanes, so it costs minutes: if the fields you need are already on the cards, `list_extract` answers in seconds. |
+| `page_grow` | Make a list longer and report whether it actually grew — press a load-more, or scroll a named pane to its own bottom. `mode:"walk"` presses one thing and reports what changed, for apps that swap content without loading a document. `mode:"explore"` opens what is collapsed. |
+| `page_state` | Read the layers under the rendered page: the app's own in-memory store, and the network responses it renders from. Discovery first (what exists, with the path to read each part), then a data path. For virtualized lists, where the DOM holds only the mounted window, and for fields the markup omits. `@dom(<css>)` reads the rendered page instead. Takes a path, never code; credential-shaped values come back masked, and counted, by design. |
+| `results` | Saved tables and the runs that fill them, under one `action`: `status` and `stop` for a run, `list`, `get` and `export` for a finished table. |
 
 ## Try it without an agent
 
