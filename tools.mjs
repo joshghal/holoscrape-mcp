@@ -83,6 +83,15 @@ const TOOLS = [
     + 'WHAT COMES BACK IS A COUNT AND A resultId, deliberately — then results action:"get" for a look '
     + 'at the first rows, or results action:"export" to write the whole table to a file. Asking for 12,000 rows in '
     + 'a reply is the thing this exists to stop.\n'
+    + 'READ `fields` BEFORE YOU DOCUMENT A COLUMN. `filled` says a column has values; it does NOT '
+    + 'say they are values OF THE ROW, and a column that is populated and misidentified is worse '
+    + 'than an empty one because it reads as verified. `distinct` is the tell — 50 pages answering '
+    + 'with 5 different values is a property of something COARSER than the row (the shop, the page, '
+    + 'the site) wearing the name you gave it. Measured: a `rating` asked for per listing came back '
+    + 'filled 66 of 70 and was reported as each item\'s rating; it was the SELLER\'s, disprovable '
+    + 'from the same table where a row reading "4 out of 5 stars" carried three five-star reviews of '
+    + 'its own. Cross-check one row against its own contents before naming what a field means. '
+    + '`fieldsWhy` covers the opposite failure — filled but hollow, 1-2 characters per cell.\n'
     + 'ONE PAGE MAY YIELD MANY ROWS. A film has a cast, a product has variants and reviews, a '
     + 'question has answers. Give `rows` for those. Give `record` for the one-per-page fields '
     + '(title, price, sku); they are copied onto every row from that page, so a cast row carries '
@@ -133,7 +142,13 @@ const TOOLS = [
         properties: {
           at: { type: 'string', description: 'CSS for one repeating row on the record page.' },
           fields: { type: 'object', additionalProperties: { type: 'string' },
-            description: 'Field name → CSS, relative to the row. "css@attr" reads an attribute.' },
+            description: 'Field name → CSS, relative to the row. "css@attr" reads an attribute. '
+              + 'USE ":self" TO TAKE THE ROW\'S OWN TEXT, whole and unparsed. That is the answer '
+              + 'when a site has moved its per-field hooks and your inner selectors come back empty: '
+              + 'measured on a marketplace whose review markup no longer carried the title and body '
+              + 'hooks, where two attempts returned those columns ABSENT while the row itself held '
+              + 'every word. One {"review": ":self"} beats guessing at hooks, and the text can be '
+              + 'split afterwards.' },
           limit: { type: 'number', description: 'Rows per page, default 500. Over it, capped is set.' },
           from: { type: 'string', description: 'WHICH schema.org array becomes the rows, by name — '
             + '"recipeIngredient", "review", "offers", "actor", "itemListElement", "performer". Use '
@@ -278,6 +293,19 @@ const TOOLS = [
         { enum: ['grow', 'walk', 'explore'] }),
       text: S('walk mode: what the person would CLICK, in their words. Prefer this over a '
         + 'selector — it survives a redesign that renames every class.'),
+      choose: S('walk mode: CHOOSE AN OPTION IN A <select>, by the option\'s visible words — '
+        + '"Most Recent", "Highest rated", "100 per page". A <select> does not answer a click, so '
+        + 'this is the only way to reach content that exists only behind a chosen option: sort '
+        + 'orders, filter selects, per-page counts, date ranges, locale and currency. THE DEFAULT '
+        + 'ORDER OF A REVIEW OR RESULT LIST IS ALMOST NEVER DATE ORDER — it is relevance or '
+        + '"most helpful" — so "the 3 latest" read off the page as it loads is usually wrong; choose '
+        + 'the date option first. Finds the select BY the option, so no selector is needed unless the '
+        + 'page carries several with overlapping names. Reads `changed`: false means the option was '
+        + 'set and the page looked identical afterwards, which is either a slow re-render (raise '
+        + 'waitMs) or a widget that ignores the event — do not report the rows as re-sorted until it '
+        + 'is true. Pass `read` with the row selector and the reply carries the rows themselves, '
+        + 'which is how you verify the order actually changed. Unlike a press this does NOT return '
+        + 'to where it started: the point of choosing is that the next read sees the new order.'),
       back: B('walk mode: return to the page this walk started from when it is done.'),
             selector: S('A control from page_study growth.candidates to press, OR any CSS selector of '
         + 'a scrollable container to scroll (pass scroll:true with it). Omit to scroll the window.'),
@@ -462,14 +490,43 @@ const TOOLS = [
     + 'get — rows and column names. Returns data, never HTML. Large tables are truncated and the '
     + 'reply gives the true total. '
     + 'export — write the whole table to a CSV in the person\'s Downloads and return the filename. '
-    + 'Use this instead of get when the table is too big to be worth reading into the conversation.',
-    { action: S('Which one: "status" or "stop" (need runId), "list", "get" or "export" (need resultId).',
-      { enum: ['status', 'stop', 'list', 'get', 'export'] }),
+    + 'Use this instead of get when the table is too big to be worth reading into the conversation. '
+    + 'download — save the ASSETS a deep scan found (images, video, audio) as FILES in the person\'s '
+    + 'Downloads. The pictures never travel through this conversation: bytes in a reply would cost '
+    + 'tens of megabytes for one page, and handing you urls to fetch yourself drops the person\'s '
+    + 'cookies so anything behind a login answers with a login page. The browser downloads them '
+    + 'signed in, as them. '
+    + 'THIS ONE NEEDS A HUMAN. Every call raises a card in the HoloScrape side panel naming the count '
+    + 'and the site, and nothing is written until a person presses Save. There is no way to '
+    + 'pre-authorise it and origin consent does not cover it. Two refusals to relay rather than '
+    + 'retry: the panel is not open (nobody to ask — the person opens it), and declined (do NOT ask '
+    + 'again straight away; a prompt asked twice is a prompt clicked without reading). '
+    + 'Assets exist in a result only if the person ran a deep scan in the panel — there is no call '
+    + 'that starts one. If a result holds rows but no assets the reply says so; use export for rows. '
+    + 'OR pass `urls` and skip the result entirely: any addresses you already hold can be saved the '
+    + 'same way, behind the same press.',
+    { action: S('Which one: "status" or "stop" (need runId), "list", "get", "export" or "download" '
+      + '(need resultId).',
+      { enum: ['status', 'stop', 'list', 'get', 'export', 'download'] }),
       runId: S('From list_extract or a backgrounded page_harvest. For action status and stop.'),
       resultId: S('From a finished run, or from action:"list". For action get and export.'),
       limit: N('action get only: rows to return. Default 100, max 1000.'),
       columns: { type: 'array', items: { type: 'string' },
-        description: 'action get only: only these columns. Omit for all of them.' } },
+        description: 'action get only: only these columns. Omit for all of them.' },
+      types: { type: 'array', items: { type: 'string' },
+        description: 'action download only: save just these kinds — "image", "video", "audio". '
+          + 'Omit for everything the scan found. A kind that is not in the result is named back to '
+          + 'you with what is, rather than answered with a silent zero.' },
+      urls: { type: 'array', items: { type: 'string' },
+        description: 'action download only: save these addresses instead of a result\'s assets — for '
+          + 'urls you already hold from anywhere: a harvested column, a `@net` payload, an API '
+          + 'response. http(s) only; a data: or blob: url cannot be fetched on your behalf. The same '
+          + 'human gate applies, and the card names the DISTINCT HOSTS as well as the count, because '
+          + 'a list you assembled can span many sites. Use this rather than fetching the urls '
+          + 'yourself: the browser downloads them signed in as the person, so anything behind a '
+          + 'login arrives intact instead of as a saved login page.' },
+      max: N('action download only: cap how many files. Default 500, max 2000. The person sees this '
+        + 'number on the card they approve.') },
     ['action']),
 
 ];
@@ -492,6 +549,7 @@ const OPS = {
   results: (a) => ({
     status: 'run.status', stop: 'run.stop',
     list: 'results.list', get: 'results.get', export: 'results.export',
+    download: 'results.download',
   }[String(a?.action || '')] || ''),
 };
 

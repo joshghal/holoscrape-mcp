@@ -88,6 +88,37 @@ window slides and the row count never grows, so "no new rows" does not mean the 
 pane with wheel and PageDown gestures — some apps load nothing at all from an assignment to
 scrollTop, and a run that only assigns scrollTop reports honest, useless failure.
 
+WHAT THESE PATHS COST, because two of them can empty a context in one call.
+
+page_study FIRST on a page you have not read. It names the repeating container for a couple of
+hundred bytes. @html on a container you guessed at prints that container: measured, @html on a search
+result grid returned 55,803 characters and showed 20,000 of them, nearly all framework attributes,
+where page_study would have named the row selector outright. @html is for ONE node you have already
+identified, at the shallowest depth that answers the question -- and list_extract is what turns a
+hundred of those into a table.
+
+page_state with NO path is a census of the app's own globals, for finding a store worth reading. On a
+page carrying analytics, wallet extensions and an ad stack it is enormous and answers nothing: one
+measured reply enumerated a 7,977-key window object beside four crypto wallet providers. Use it when
+you want the store, not as a general "what is here".
+
+A URL FILTER MATCHES ASSETS TOO, so pick a fragment only a data call can have. Measured twice in one
+session, ~24,000 characters each: @net("review") matched the site's STYLESHEET, whose bundle name
+contains "reviews-section", and @net("api/v3/ajax") matched its recommendations spec. Neither had
+anything to do with reviews. A filter is a substring of the whole url, not a category — prefer a path
+fragment the data endpoint owns, and read the mime on what comes back before reading the body.
+
+@net(<filter>) BEFORE @net(*). The unfiltered watch keeps every response, and on a heavy app the
+reply cannot be returned at all -- measured, 120,979 bytes against a 37,500 limit, so nothing came
+back. Name the filter from the request the app makes to page ITSELF: infinite scroll fetches each
+next batch from one url shape, and watching only that shape turns the whole problem into one readable
+response. * is for discovery on a light page, never a first move on an application.
+
+AND WHAT AN IMG SRC IN A GRID ACTUALLY IS. In a search or gallery grid it is almost always a preview
+-- a hundred pixels wide, served off the search engine's own cdn, not the file anyone wanted. The
+original usually lives in the batch payload @net just caught, joined to its row by whatever id the
+markup carries. Check a dimension before promising someone files.
+
 Read \`ended\` before believing a harvest finished: dry means the list really ended, capped means it
 ran out of hops AND THERE IS MORE, limit means it hit the row cap. Never report capped as complete.
 
@@ -167,6 +198,91 @@ So for a run of any length, ASK THEM TO PIN the tab in the HoloScrape panel and 
 A pinned tab is one they chose to keep; a tabId you are holding is one they did not. If a call
 does fail this way, tabs_list re-establishes where things are — and a page_grow mode:"walk" resumes from its
 offset rather than starting over.
+
+# A FIELD YOU NAMED IS A CLAIM, AND CLAIMS GET TESTED
+
+filled: 66 of 70 says a column has values. It does not say they are values OF THE ROW. A column
+that is populated and misidentified is the most expensive answer you can hand anyone, because unlike
+an empty one it reads as verified.
+
+Measured, on a marketplace: a rating field asked for per listing came back filled 66 of 70 and was
+reported as each book's rating. It was the SHOP's rating. The proof was already in the same table —
+one row read "4 out of 5 stars" while carrying three five-star reviews of its own — and no tool said
+otherwise, because no tool can. Fifty pages had answered with five different values.
+
+So before you write down what a field means, falsify it against data you already hold:
+
+  read distinct beside filled. Fifty rows and five distinct values is a property of something
+    COARSER than the row — the shop, the page, the whole site — mislabelled as a property of it
+  cross-check one row against its own contents. A per-item rating cannot read 4 stars on an item
+    whose only reviews are 5, 5 and 5
+  ask what the site is actually showing. A marketplace usually shows the SELLER's score beside a
+    listing, and a listing with no reviews of its own still displays a number
+
+And say which it is. "Rating (shop-level; this listing has no reviews of its own)" is an answer;
+"Rating: 4.9" over the same data is a wrong one that nobody can see is wrong.
+
+A NULL GETS SCRUTINISED BECAUSE IT LOOKS LIKE FAILURE. A populated column gets trusted because it
+looks like success. Spend the check on the second one.
+
+# WHAT A MARKETPLACE SEARCH ACTUALLY RETURNS
+
+Two things it is not, and both have shipped into answers:
+
+NOT THE THING YOU ASKED FOR. A search for "psychology book" returned journals, planners, printable
+worksheets, PDF bundles, a study guide, brain-shaped bookends and a neon sign. Measured on one run:
+14 of 50 delivered "books" were not books; on another, 424 cards held 124 book-shaped listings.
+Filter to what was asked for, and report how many you dropped and why — a filtered 50 with the count
+of discards is honest; an unfiltered 50 is a different question answered.
+
+NOT RANKED THE WAY "TOP" IMPLIES. The first slots are usually PAID. Cards carry it in their own text
+("Ad by", "Ad from shop"), so it costs nothing to label them — and "top 50" over an ad-seeded
+relevance order, unlabelled, claims an authority the page never offered.
+
+# DOES THE ANSWER DEPEND ON WHO IS ASKING?
+
+That is the whole question, and it decides the route. Not "inside or outside the browser" — an
+earlier version of this section said outside fetches were simply wrong, and that was too broad by
+half. It cost speed for nothing on every public endpoint.
+
+IF THE ANSWER DEPENDS ON THE ASKER, USE THE BROWSER. Logged-in pages, personalised feeds, prices in
+someone's currency, anything behind consent, anything behind a bot wall. An outside request carries
+none of the person's cookies, none of their consent state, and a user agent the site has never seen,
+so it is answered by a DIFFERENT page: a search engine hands it a consent wall, a marketplace hands
+it a login, some hand back a stripped shell that looks real.
+
+IF IT DOES NOT, FETCH IT DIRECTLY AND SAVE THE ROUND TRIP. A public data endpoint answers everyone
+the same. Measured: a storefront's own /products.json returned its entire 148-product catalogue in
+one request, faster than any route through a tab, and /collections.json listed every collection
+beside it. Reaching for a browser there is ceremony.
+
+THE TRAP IS THE SAME EITHER WAY, AND IT IS ABOUT WHAT AN EMPTY ANSWER MEANS. Measured on an image
+search: a session grepped the curl'd HTML for the pattern carrying full-resolution urls, got zero
+matches, and concluded the urls were not in the page. They were in the page — in the one the browser
+had, which was never looked at. A headless probe of the same url landed on a bot wall and found one
+file. So a zero from an outside fetch is NOT evidence of absence. Confirm it against what the browser
+holds -- page_state "@html(<css>)" for markup, "@net(<filter>)" for what the page fetched -- before
+you write down that something is not there.
+
+# WHICH APP IS RENDERING, AND ON A PAGE WHERE IT IS AWAKE
+
+Reviews, ratings, chat, search on a commerce site are usually a third-party widget, and naming the
+wrong one sends the whole run down a dead end. Two ways to get it wrong, both measured in one day:
+
+  a global's NAME is not proof it is doing the work. A store carried klaviyoReviewsProductDesignMode
+    and the reviews were rendered by Bazaarvoice; the Klaviyo app was merely installed.
+  STRING FREQUENCY is not proof either. The same store's product markup mentioned one vendor 17 times
+    and another once — and the one mentioned once was the one drawing the reviews.
+
+What settles it is the MARKUP AROUND THE CONTENT: read the container the reviews actually live in and
+look at its id and classes. A vendor prefix on the element holding the data is the answer; a script
+tag in the head is an installation.
+
+AND PROBE AN ITEM THAT HAS THE THING. Both mistakes above happened on pages where the widget was
+inert — one product had no reviews at all, so every review global read null and the machinery never
+started. Pick the item with the HIGHEST count of whatever you are after, because that is the page
+where the code is actually running. On a catalogue that means sorting by review count first, not
+taking the first handle in the list.
 
 # Many pages, the same thing off each: that is ONE call
 
