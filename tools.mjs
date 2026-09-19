@@ -138,7 +138,15 @@ const TOOLS = [
       rows: { type: 'object',
         description: 'The repeating block on each page. {at: "css for one row", fields: {name: "css '
           + 'relative to that row"}, limit: n}. Each row is given `billing` (1-based position) '
-          + 'unless you name your own.',
+          + 'unless you name your own. '
+          + 'ALSO THE FAST PATH FOR A CUSTOM ATTRIBUTE ON A SINGLE PAGE\'S OWN ROWS: pass `urls: '
+          + '[<that one page\'s address>]` with no `links`, and an "css@attr" field here reads '
+          + 'that attribute off every repeating row in ONE call — cheaper than page_state\'s '
+          + '@html per index, which page_state can only do one element at a time. Only works when '
+          + 'loading that URL fresh reproduces the exact rows you saw; a live, session-paginated '
+          + 'list with no such URL (page 2+ of an inbox after "older") cannot be reopened this way '
+          + 'and needs page_state\'s per-index @html instead, called for several indices in '
+          + 'parallel rather than one at a time.',
         properties: {
           at: { type: 'string', description: 'CSS for one repeating row on the record page.' },
           fields: { type: 'object', additionalProperties: { type: 'string' },
@@ -370,6 +378,16 @@ const TOOLS = [
     + 'real numbers the app had resolved for display. If a state read lacks what the app plainly '
     + 'shows, re-read the DOM with page_study and list_extract before reporting it absent — and '
     + 'the reverse when the DOM gives a truncated or link-less list. '
+    + 'A SECOND MEASURED EXAMPLE, because it is the one that keeps being missed — X/Twitter: its '
+    + 'timeline mounts about 9 <article> cells no matter how far you scroll, so any DOM read of a '
+    + 'feed returns single digits and looks like the end of the feed. Path '
+    + '"scroller.context.store.getState.entities.tweets.entities" held 284 complete tweets at the '
+    + 'same moment, keyed by id, each with full text, engagement counts and media — including '
+    + '`video_info.variants[]`, the real mp4 urls, which the DOM never carries. '
+    + '"...entities.users.entities" beside it resolves authors (name, screen_name, '
+    + 'followers_count, is_blue_verified) without a second pass. Unlike the DOM it keeps what '
+    + 'scrolled out of view. For turning one post into a downloadable mp4 without an open tab, '
+    + 'see `resolve_x_video`. '
     + 'Credential-shaped values come back masked by design '
     + '— cookies, bearer and session tokens, anything under a key like auth/secret/session_id, and '
     + 'any JWT- or API-key-shaped string. The reply counts them as redacted so you can see '
@@ -400,10 +418,22 @@ const TOOLS = [
         + 'like the feature is missing: '
         + '"@dom(<css>)" returns the matched elements as rows of text/label/href/img, with '
         + 'hidden:N when the page holds more — the fix for a list_extract that came back short, '
-        + 'and for icon rails whose only name is an aria-label. '
+        + 'and for icon rails whose only name is an aria-label. IT NEVER RETURNS A CUSTOM '
+        + 'ATTRIBUTE — text/label/href/img only. For a data-* or any other attribute, read one '
+        + 'element at a time with @html below, or — if what you need is that SAME attribute off '
+        + 'EVERY row of a page reachable by a fresh URL load — call page_harvest with `urls` set '
+        + 'to that one page\'s own address (no `links`) and `rows.fields` using "css@attr": one '
+        + 'call reads the attribute off every row instead of one index at a time. This does not '
+        + 'work on a page whose current state cannot be reproduced by loading its URL fresh — a '
+        + 'live, session-paginated list (page 2+ of an inbox with no stable per-page URL) still '
+        + 'needs the per-index route below. '
         + '"@html(<css> :: <depth> :: <index>)" returns the markup itself, scoped and stripped, '
         + 'with the TRUE length beside what was returned — reach for it the moment another tool '
-        + 'refuses something you can plainly see. '
+        + 'refuses something you can plainly see. WHEN YOU NEED THIS FOR MANY INDICES on the '
+        + 'SAME already-loaded page (the bulk route above does not apply), send those calls '
+        + 'IN PARALLEL, several to a turn, rather than one at a time waiting on each reply — the '
+        + 'page is static between reads so concurrent indices are safe, and this is the '
+        + 'difference between one round trip and dozens of sequential ones. '
         + '"@map(<scope>)" expands the disclosures inside scope and splits links (href) from '
         + 'controls (button-routed), which is how a collapsed tree stops under-reporting. '
         + '"@collect(<row css> :: <hops> :: <up|down>)" harvests a recycler that never grows — it '
@@ -504,7 +534,13 @@ const TOOLS = [
     + 'Assets exist in a result only if the person ran a deep scan in the panel — there is no call '
     + 'that starts one. If a result holds rows but no assets the reply says so; use export for rows. '
     + 'OR pass `urls` and skip the result entirely: any addresses you already hold can be saved the '
-    + 'same way, behind the same press.',
+    + 'same way, behind the same press. '
+    + 'AN X (TWITTER) VIDEO IS RESOLVED BEFORE IT IS SAVED, automatically, whenever a scan learned '
+    + 'the post\'s id for it — a raw captured X video url is often session-bound or one small DASH '
+    + 'fragment rather than the whole clip, so this asks X\'s public syndication API for the real '
+    + 'file first. The reply carries `resolvedX` (a count) when this happened; nothing to ask for, '
+    + 'it just means the file that landed is not necessarily the url the scan reported. For a post '
+    + 'url or id that was never scanned, see `resolve_x_video` instead.',
     { action: S('Which one: "status" or "stop" (need runId), "list", "get", "export" or "download" '
       + '(need resultId).',
       { enum: ['status', 'stop', 'list', 'get', 'export', 'download'] }),
@@ -528,6 +564,85 @@ const TOOLS = [
       max: N('action download only: cap how many files. Default 500, max 2000. The person sees this '
         + 'number on the card they approve.') },
     ['action']),
+
+  // X (TWITTER)-SPECIFIC, AND SAYS SO IN ITS OWN NAME — this is not the hostname-branching bug a
+  // generic tool would have. `page_harvest` or `results` secretly special-casing x.com would be
+  // exactly that bug: a caller reading their description would have no way to know a single site
+  // gets different treatment underneath. This tool IS the special case, out in the open, the same
+  // as `provider-x.js` is an openly X-specific data file beside the generic engine that reads it.
+  //
+  // WHY THIS EXISTS AT ALL: X's own captured video urls are frequently not a working file two
+  // different ways — `amplify_video/...` is session-bound (answers 0 bytes to a fetch made outside
+  // the person's own signed-in browser), and X's CMAF/DASH delivery hands out small timed fragments,
+  // so a captured asset can be a `.m4s` segment that plays a second and stops rather than the whole
+  // clip. `results action:"download"` already resolves this automatically when a scan learned the
+  // post's id — this tool is for the OTHER cases: you have a post url or id from somewhere that was
+  // never scanned (a search result, a harvested column, a link someone pasted) and want the real
+  // mp4 url directly, or you want to hand it to something other than the browser's own downloader.
+  T('resolve_x_video',
+    'Turn an X (Twitter) post into a real, plain, third-party-fetchable video/mp4 url — resolved '
+    + 'through X\'s own public syndication API (unauthenticated, the same endpoint its oEmbed '
+    + 'embeds use), which returns the highest-bitrate whole file rather than whatever fragment or '
+    + 'session-bound url happened to be captured. '
+    + 'RUNS ENTIRELY ON THIS MACHINE. Needs no browser tab, no pairing, no origin consent, and '
+    + 'works even with Chrome closed — it is one HTTPS call to a public X endpoint, nothing this '
+    + 'tool touches is the person\'s own browser or session. '
+    + 'Give EITHER `url` (an x.com or twitter.com post address — the id is read out of it) or '
+    + '`statusId` (the bare numeric id) directly. Add `videoId` only to disambiguate a tweet '
+    + 'carrying more than one video (a quote-post keeping its own clip alongside the quoted '
+    + 'post\'s) — pull it from a captured asset url\'s own amplify_video/<id>/ or '
+    + 'ext_tw_video/<id>/ segment; omitted, the highest-bitrate video on the tweet wins. '
+    + 'Returns {url, statusId} on success. A tweet with no video, a bad id, or a lookup failure '
+    + 'comes back {url: null, why} rather than throwing — "no video here" is an ordinary answer, '
+    + 'not an error to retry. '
+    + 'For files a deep scan already found in the panel, `results action:"download"` resolves '
+    + 'this the same way automatically before saving — reach for this tool instead when you hold '
+    + 'a post url or id that was never scanned, or want the url itself rather than a saved file. '
+    + 'THE RETURNED URL NEEDS NO COOKIES OR SESSION, SO IT CAN BE FETCHED DIRECTLY — curl, a '
+    + 'script, anything outside the browser — instead of routing it through `results '
+    + 'action:"download"`. That action\'s human-approval gate exists because most assets need the '
+    + 'person\'s own signed-in browser to fetch; a resolved X video needs none of that, so for a '
+    + 'batch of posts the plain path is: collect post urls/ids, call this tool once per post, then '
+    + 'fetch the returned urls yourself. Bulk-finding posts to resolve: on a timeline, a DOM read '
+    + 'for `article:has(video) a[href*="/status/"]` (via `page_state` `@dom(...)`) after scrolling '
+    + 'beats parsing the timeline\'s own GraphQL response — the feed only refetches once you\'ve '
+    + 'scrolled to the true bottom of what is already rendered, which a few scroll-hops rarely '
+    + 'reach. Whatever you fetch yourself, confirm it landed — check the file type and a real byte '
+    + 'size — rather than trusting a 200 or an exit code alone; a session-bound or truncated '
+    + 'response can still return success.\n'
+    + 'CHEAPER STILL WHEN AN X TAB IS ALREADY OPEN: THE PAGE\'S OWN REDUX STORE ALREADY HOLDS THE '
+    + 'MP4 URLS, for every post loaded this session, with no network call and no syndication '
+    + 'lookup at all. Read it with page_state, path '
+    + '"scroller.context.store.getState.entities.tweets.entities" — a map of tweet id -> the whole '
+    + 'tweet, and each one\'s media carry `video_info.variants[]`, which is a list of '
+    + '{bitrate, content_type, url} where the `video/mp4` entries are the real, complete files. '
+    + 'Sort by bitrate and take the top one, exactly as this tool does with the syndication reply. '
+    + 'Beside them the same store holds `entities.users.entities[<id>]` with flat name, '
+    + 'screen_name, followers_count and is_blue_verified — so author details need no second read. '
+    + 'THE STORE IS ALSO THE ANSWER TO X\'S VIRTUALIZATION: measured live, 284 complete tweets sat '
+    + 'in it while the DOM had only about 9 <article> cells mounted, and unlike the DOM it does '
+    + 'not lose what scrolled past. If a timeline read comes back with single-digit rows, that is '
+    + 'the DOM ceiling, not the end of the feed — read the store. Use this tool instead when there '
+    + 'is no open tab holding the post, or when the post was never loaded into that store.\n'
+    + 'GETTING THE ACTUAL FILES, three paths, cheapest first: (1) a deep scan found them — '
+    + '`results action:"download"` resolves each one the same way automatically before saving, and '
+    + 'reports `resolvedX` counting how many it had to rescue; (2) you hold post urls or ids — '
+    + 'call this tool per post and fetch the returned urls yourself, no browser and no approval '
+    + 'gate needed because the resolved url is public; (3) you hold urls from anywhere and want '
+    + 'them saved by the person\'s own signed-in browser — `results action:"download"` with '
+    + '`urls`. WHY THE CAPTURED URL IS USUALLY NOT THE FILE, so you recognise it: X delivers video '
+    + 'as CMAF/DASH fragments, and a fragment url carries an extra "/0/0/" segment — '
+    + '`/vid/avc1/0/0/<W>x<H>/<name>.mp4` is a ~900-byte fragment, while '
+    + '`/vid/avc1/<W>x<H>/<name>.mp4` is the whole clip (6.6MB in the measured pair). A '
+    + '`/aud/mp4a/0/0/<bitrate>/` url is the separate AUDIO track, not a video at all. Any '
+    + 'sub-kilobyte "video" is one of these, never a clip — treat a byte size under a few KB as '
+    + 'proof the resolve did not happen rather than as a small file.',
+    { url: S('An x.com or twitter.com post url. Either this or statusId.'),
+      statusId: S('The bare numeric tweet/post id. Either this or url.'),
+      videoId: S('Optional — disambiguates a tweet carrying more than one video. Pull it from a '
+        + 'captured asset url\'s amplify_video/<id>/ or ext_tw_video/<id>/ segment. Omitted, the '
+        + 'highest-bitrate video on the tweet is returned.') },
+    []),
 
 ];
 
@@ -572,6 +687,8 @@ const READ_ONLY = new Set([
   // Read the browser or a saved table. None of them navigate, press, scroll or open anything.
   'current_page', 'tabs_list', 'page_study', 'page_state',
   'run_status', 'results_list', 'results_get', 'results_export',
+  // Reads a public third-party API. Does not touch the browser at all.
+  'resolve_x_video',
 ]);
 
 // Repeating the call adds nothing. Only meaningful on the tools that DO change something: stopping

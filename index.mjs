@@ -45,7 +45,14 @@ const PAIR_FILE = path.join(HOME, 'pair.json');
 //
 // 27182 for the digits of e, because a number nobody can recall is a number nobody can debug.
 const PORT_BASE = Number(process.env.HOLOSCRAPE_PORT || 27182);
-const PORT_SPAN = 4;
+// EIGHT, NOT FOUR. A developer runs one agent session per window and four is an ordinary number of
+// windows to have open — so the ceiling was reachable by simply working, and reaching it cost every
+// tool (see `listen` at the bottom). Widening is not the fix, it is the headroom; the fix is that the
+// ninth session now degrades instead of disappearing. `bridge-window.js` dials this same span and
+// must be changed WITH it, or a server above the extension's range listens to nobody forever.
+// The test harness gives each slot a 16-wide window (`PORT_STRIDE` in `test/run-all.mjs`), so this
+// still fits inside one slot.
+const PORT_SPAN = 8;
 // Which port this process actually got, filled in by listen(). Needed so a peer scan can tell a
 // neighbour's server from its own listener, and so a failure can name where it is.
 const MINE = { at: 0 };
@@ -73,7 +80,18 @@ function token() {
   return made;
 }
 const PAIR = token();
+// ONE ID PER SERVER PROCESS, NOT PER PORT. A port gets reused — this process exits, a new agent
+// session binds the same number a minute later — and "release the connection on 27182" must mean
+// THIS session, never whichever one happens to be sitting on that port later. The extension keys its
+// release list on this, not on the port.
+const SESSION = crypto.randomUUID();
+// The MCP client's own name, learned from `initialize` — "Claude Code", "Cursor", whichever agent is
+// actually driving. Null until that handshake happens, which can land before OR after the extension's
+// socket connects; both orders are handled where each is used.
+let CLIENT_INFO = null;
 // Same prefix on both ends; the token rides in the WebSocket subprotocol.
+// DEV ONLY — PAIRING OFF, BY EXPLICIT LAUNCH FLAG.
+//
 
 const TOKEN_PROTO = 'holoscrape.token.';
 
@@ -95,6 +113,13 @@ if (process.argv.includes('--code')) {
 // hundred rows does not arrive in one.
 const GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 let live = null;                 // the one connected extension
+// When the person last turned agents off in HoloScrape — the extension closes its socket with 4002 to
+// say so. Cleared by the next connection. Without it that close reads as any other drop, and the agent
+// is told to reload the extension: the opposite of what was just decided.
+let turnedOffAt = 0;
+// When the person released THIS specific connection (not all of them) from the connection window or
+// the panel's host list. Same reasoning as `turnedOffAt`, scoped to one session instead of every one.
+let releasedAt = 0;
 const waiting = new Map();       // id -> {resolve, reject, timer}
 let seq = 0;
 
@@ -184,7 +209,7 @@ function unframe(state) {
     const op = b[0] & 0x0f;
     const body = unmask(b, size.at, size.len);
     state.buf = b.subarray(size.at + 4 + size.len);
-    if (op === 0x8) { state.kill = 'closed'; return out; }
+    if (op === 0x8) { state.kill = 'closed'; state.closeCode = body.length >= 2 ? body.readUInt16BE(0) : 0; return out; }
     if (op === 0x9 || op === 0xa) continue;               // ping/pong: nothing to carry
     state.parts.push(body);
     if (!fin) continue;                                   // more parts of this message still coming
@@ -259,11 +284,23 @@ function settle(msg) {
 }
 
 // One decoded message. False means the socket was refused and the caller must stop reading it.
+// TERMINATE MEANS THE PROCESS EXITS, NOT JUST THE SOCKET. Release (4003, extension-side only) leaves
+// this process running so Reconnect has something to reconnect to. This is the other thing entirely —
+// asked for when the person wants the PORT back, for a fresh session to bind on its own next start —
+// so there is nothing left running to reconnect to, on purpose.
 function take(sock, conn, welcome, text) {
   let msg = null;
   try { msg = JSON.parse(text); } catch (_) { return true; }
   if (!conn.paired) return greet(sock, conn, welcome, msg);
   if (msg.type === 'pong' || msg.type === 'hello') return true;
+  if (msg.type === 'terminate') {
+    say('the person ended this session from the extension — exiting so the port frees up');
+    try { sock.write(closeFrame(4004, 'ended by request')); } catch (_) {}
+    // A beat for the close frame to actually leave the socket before the process — and the port —
+    // goes with it. Same reasoning as `refuse()`'s 50ms pause, doubled: this one carries more weight.
+    setTimeout(() => process.exit(0), 60);
+    return true;
+  }
   settle(msg);
   return true;
 }
@@ -273,6 +310,7 @@ function onData(sock, state, conn, welcome, chunk) {
   for (const text of unframe(state)) if (!take(sock, conn, welcome, text)) return;
   if (!state.kill) return;
   if (state.kill !== 'closed') say(`dropped a connection: ${state.kill}`);
+  sock.hsCloseCode = state.closeCode || 0;
   sock.destroy();
 }
 
@@ -283,7 +321,16 @@ function failWaiter(id, held) {
 }
 
 function onGone(sock) {
-  if (live === sock) { live = null; say('extension disconnected'); }
+  if (live === sock) {
+    live = null;
+    if (sock.hsCloseCode === 4002) { turnedOffAt = Date.now(); say('extension disconnected: the person turned agents off'); }
+    else if (sock.hsCloseCode === 4003) { releasedAt = Date.now(); say('extension disconnected: the person released this connection'); }
+    // 4004 never reaches here in practice — this process is already exiting when it sends that frame
+    // — but `onGone` fires from the socket's own 'close'/'error' events regardless of who is faster,
+    // so the branch exists for correctness rather than to ever actually log anything useful.
+    else if (sock.hsCloseCode === 4004) { /* exiting */ }
+    else say('extension disconnected');
+  }
   for (const [id, held] of waiting) failWaiter(id, held);
 }
 
@@ -297,8 +344,9 @@ function attach(sock, atUpgrade) {
   const welcome = () => {
     conn.paired = true;
     live = sock;
+    turnedOffAt = 0;
     beat(sock);
-    try { sock.write(frame(JSON.stringify({ type: 'welcome', server: 'holoscrape' }))); } catch (_) {}
+    try { sock.write(frame(JSON.stringify({ type: 'welcome', server: 'holoscrape', session: SESSION, client: CLIENT_INFO }))); } catch (_) {}
   };
   if (atUpgrade) { say('extension connected (authenticated at upgrade)'); welcome(); }
   sock.on('data', (chunk) => onData(sock, state, conn, welcome, chunk));
@@ -381,6 +429,19 @@ function beat(sock) {
 
 const NO_BROWSER = 'No browser connected. Open Chrome with the HoloScrape extension installed, '
   + 'then pair it in the side panel.';
+// A DECISION, NOT A FAULT, AND IT HAS TO READ AS ONE. Every other message here ends in a fix; this one
+// must not, because the only "fix" would be overruling the person who turned it off.
+const TURNED_OFF = 'The person turned off agent access in HoloScrape, so this session has no browser. '
+  + 'That was their decision, not a fault: do not tell them to reload the extension, re-pair, or reopen '
+  + 'the side panel to get it back, and do not retry these calls. If the task needs their browser, say '
+  + 'so plainly and leave it to them to turn it back on.';
+// DIFFERENT FROM TURNED_OFF ON PURPOSE. Other agent sessions may still be connected fine — this one
+// was singled out, not everything shut off — so the fix (if any) is "reconnect just this one," not
+// "check whether agents are allowed at all."
+const RELEASED = 'The person released this specific browser connection in HoloScrape — other agent '
+  + 'sessions may still be connected fine. Do not tell them to reload the extension or re-pair, and do '
+  + 'not retry these calls. If the task needs the browser back, say so plainly; they can reconnect this '
+  + 'session from the connection window or the AI agents screen in the side panel.';
 
 // THAT MESSAGE IS A LIE WHENEVER ANOTHER SERVER IS RUNNING, AND THAT IS THE COMMON CASE.
 //
@@ -413,6 +474,26 @@ async function peers() {
 }
 
 async function whyNoBrowser() {
+  // NO PORT AT ALL IS A DIFFERENT FAULT FROM AN UNDIALLED ONE, and it has a different fix.
+  //
+  // Reloading the extension is the answer when a server holds a port nobody dialled. It cannot be
+  // the answer here: this process never bound one, so there is nothing for the extension to dial and
+  // a reload is a wasted session. Said first, and named as the pool rather than as pairing.
+  if (POOL_FULL) {
+    const held = await peers().catch(() => []);
+    return `This server never got a port. ${PORT_BASE}-${PORT_BASE + PORT_SPAN - 1} is the whole `
+      + `pool and all of it is in use${held.length ? ` (listening now: ${held.join(', ')})` : ''}, so `
+      + 'the extension has nothing here to connect to and no browser call can succeed from this '
+      + 'session.\n'
+      + 'RELOADING THE EXTENSION WILL NOT HELP — there is no port on this side to dial.\n'
+      + 'Close one other agent session (or kill its `mcp/index.mjs` — `lsof -nP -iTCP:'
+      + `${PORT_BASE}-${PORT_BASE + PORT_SPAN - 1}`
+      + '`), then reconnect this one with `/mcp`. That reconnect has to happen interactively; a '
+      + 'session that started without a port cannot recover on its own, so plan a fallback rather '
+      + 'than retrying these calls.';
+  }
+  if (turnedOffAt) return TURNED_OFF;
+  if (releasedAt) return RELEASED;
   const others = await peers().catch(() => []);
   if (!others.length) return NO_BROWSER;
   // A LISTENING PEER IS NOT EVIDENCE THAT THE BROWSER IS ON IT.
@@ -477,6 +558,7 @@ const send = (m) => process.stdout.write(`${JSON.stringify(m)}\n`);
 
 import { TOOLS as TOOLS0, OPS as OPS0, SLOW as SLOW0, NEXT as NEXT0, timeoutFor as timeoutFor0 } from './tools.mjs';
 import { INSTRUCTIONS } from './guidance.mjs';
+import { resolveXVideo, statusIdFromUrl } from './x-video-resolve.js';
 
 // THE TOOL SURFACE IS HELD IN A BOX SO IT CAN BE REPLACED WHILE RUNNING.
 //
@@ -742,6 +824,28 @@ function loopRefusal(l) {
 }
 
 async function call(name, args) {
+  // THE ONE TOOL THAT NEVER TOUCHES THE BROWSER. Every other name below becomes a browser op and
+  // rides `ask()` over the paired socket — that is what the rest of this function is for. This one
+  // is a single HTTPS call to a public X endpoint, answerable whether or not Chrome is even open,
+  // so it is handled here and returns before any of the browser-specific machinery (pairing state,
+  // tab bookkeeping, the loop detector) gets a chance to ask about a browser it does not need.
+  if (name === 'resolve_x_video') {
+    const statusId = String(args?.statusId || '').trim() || statusIdFromUrl(args?.url);
+    if (!statusId) {
+      return asResult({ url: null, why: 'give either `url` (an x.com/twitter.com post address) or '
+        + '`statusId` (the bare numeric id) — neither was present, or `url` had no /status/<id> in it.' }, name);
+    }
+    const videoId = String(args?.videoId || '').trim() || null;
+    try {
+      const url = await resolveXVideo(statusId, videoId);
+      return asResult(url
+        ? { url, statusId }
+        : { url: null, statusId, why: 'the syndication API answered but had no matching video — '
+          + 'either this tweet has no video, or the tweet is gone/protected.' }, name);
+    } catch (e) {
+      return asResult({ url: null, statusId, why: `lookup failed: ${e.message || e}` }, name);
+    }
+  }
   // A CONSOLIDATED TOOL RESOLVES ITS OWN OP. `results` is one name over five ops, chosen by
   // `action`; every other entry is still a plain string. The branch lives in the surface, not
   // here, so this stays the one place a tool name becomes a browser op.
@@ -908,6 +1012,13 @@ async function call(name, args) {
 // it does not use any feature of, and guessing the current one wrongly is how a working server
 // refuses to start.
 function hello(msg, reply) {
+  // Learned once, kept for the life of the process — a released connection can be reconnected without
+  // the agent re-announcing itself, and the row it left behind should still say who it was.
+  CLIENT_INFO = msg.params?.clientInfo || CLIENT_INFO;
+  // THE EXTENSION MAY ALREADY BE CONNECTED. `initialize` is the agent talking to THIS process over
+  // stdio — nothing to do with the browser socket — so if one is already attached, tell it who just
+  // showed up rather than waiting for its next reconnect to find out.
+  if (live) { try { live.write(frame(JSON.stringify({ type: 'identity', session: SESSION, client: CLIENT_INFO }))); } catch (_) {} }
   reply({
     protocolVersion: msg.params?.protocolVersion || '2025-06-18',
     // listChanged, because the watcher below can genuinely send one. Declaring it without meaning
@@ -1126,10 +1237,27 @@ srv.once('listening', () => {
   say('');
 });
 
+// A FULL POOL MUST NOT TAKE THE TOOLS WITH IT.
+//
+// This used to `process.exit(1)`. Exiting kills stdio, so the client registers ZERO tools and says
+// nothing about why — and an agent in that session has no way to learn that HoloScrape was ever
+// meant to exist. Measured: a session asked to scrape a page went looking for a browser, found no
+// holoscrape tools in its list, and only discovered the cause by reading `index.mjs` and
+// `bridge-window.js` out of the repository. It then reported "HoloScrape is genuinely unavailable",
+// which was true, and unlearnable from anything the tool itself said.
+//
+// Losing the browser is unavoidable when there is no port to be reached on. Losing the TOOLS is not:
+// the process keeps serving stdio, every tool stays listed, and each call answers with the cause and
+// the one action that fixes it. A capability that explains its own absence costs one honest error; a
+// capability that vanishes costs a session.
+let POOL_FULL = false;
+
 function listen(i = 0) {
   if (i >= PORT_SPAN) {
+    POOL_FULL = true;
     say(`ports ${PORT_BASE}-${PORT_BASE + PORT_SPAN - 1} are all busy — is another holoscrape-mcp running?`);
-    process.exit(1);
+    say('  Tools stay listed and every call will say this, rather than the session losing them silently.');
+    return;
   }
   srv.once('error', (e) => (e.code === 'EADDRINUSE' ? listen(i + 1) : (say(String(e.message)), process.exit(1))));
   srv.listen(PORT_BASE + i, '127.0.0.1');
