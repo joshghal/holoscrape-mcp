@@ -45,7 +45,8 @@ const O = (description) => ({
 // rather than what it does, and names the tool that comes next.
 const TOOLS = [
   T('current_page',
-    'The page the person is looking at right now, and what can be extracted from it. Takes no '
+    'SCROLL BEFORE YOU STUDY. Everything this returns describes the page AS IT IS NOW, and most list pages mount ONE SCREENFUL and add the rest as you move down them: call page_grow until it reports grew:false, and only then read or study. Measured on shopee.com.br, a first read saw 14 product links and reported total:14 on a page that held 54 once grown — nothing about the first answer looked partial. A count taken before growing is a FLOOR, and every plan sized on it (tabs to open, pages to walk, whether to fan out) is scaled wrong. '
+    + 'The page the person is looking at right now, and what can be extracted from it. Takes no '
     + 'arguments — use this for "I have a page open, scrape it". Returns a tabId to pass to '
     + 'page_study or list_extract. Honours a page the person pinned in the HoloScrape panel; '
     + 'otherwise it is the active tab of their last-used Chrome window. '
@@ -165,6 +166,20 @@ const TOOLS = [
             + 'and the reply tells you what it passed over in `alsoRows`.' },
         },
         required: [] },
+      retryOf: S('A finished runId whose FAILED pages you want to re-run — and nothing else. A '
+        + 'thin page is usually transient rather than a bad page: measured over 625 products, one '
+        + 'pass read 529 and an identical second pass read 563, with only 10 failing BOTH times. '
+        + 'Without this the only way to recover ten failures was to re-run all 625 and merge the '
+        + 'passes by hand. Give the runId; the urls come off that run. Pair it with awaitFor if the '
+        + 'failures look like timing.'),
+      awaitFor: S('WAIT FOR THIS CONDITION ON EACH PAGE instead of a guessed settle. Same grammar '
+        + 'as the @await path: "<css> :: <mode> :: <ms>" — mode is exists (default), gone, still, '
+        + 'or a number meaning at least that many. THIS IS THE FIX FOR A HARVEST THAT READS SOME '
+        + 'PAGES AND NOT OTHERS: measured, four agents ran the same selector over the same 120 '
+        + 'products and two got every review while two got almost none. The pages were identical; '
+        + 'the timing was not. Name what you are waiting for and no page is read early, nor waited '
+        + 'on longer than it needs. "<spinner css> :: gone" is the surest signal where one exists, '
+        + 'because waiting for CONTENT cannot tell a slow page from an empty one.'),
       lanes: N('Pages open at once. Default 5. More is not always faster and looks more like '
         + 'scraping from the person\'s own address.'),
       limit: N('Pages per run. Use it to pilot on 3 before committing to 250 — and NOTE it does '
@@ -196,11 +211,23 @@ const TOOLS = [
     + 'iterates, the rows never pass through you, and it is the difference between a handful of '
     + 'calls and one per page. This tool REFUSES after a few navigate-then-read-rows cycles and '
     + 'says so; pass oneByOne:true if the pages really are unrelated. '
-    + 'Returns arrived:false if the URL did not change, and the reply is '
-    + 'only sent once the new document is ready, so what you read next is the page you asked for '
-    + 'and not the previous one.',
+    + 'Returns arrived:false if the URL did not change. '
+    + 'THE DOCUMENT BEING READY IS NOT THE APP BEING READY, AND THIS REPLY TELLS YOU WHICH YOU HAVE. '
+    + 'On a site that paints from JavaScript — every marketplace — the load event fires on a header '
+    + 'and a spinner, and a read taken there succeeds while describing a page that does not exist '
+    + 'yet. So this also waits for a list to appear AND STOP GROWING, then reports: hasList, '
+    + 'rowsOnPage, and rising:true when the count was still climbing when the wait ran out. '
+    + 'READ THOSE BEFORE YOU PLAN ANYTHING. hasList:false on a page you believe is a list means you '
+    + 'are early, or the rows are FETCHED rather than rendered — pass `network` to read what the '
+    + 'page fetches, which is complete long before the DOM is. rising:true means rowsOnPage is a '
+    + 'FLOOR, not a total: sizing a fan-out off it is how a run reports 27 of 240. Measured on '
+    + 'shopee.com.br, where an early read saw 13-20 of 60 products and one saw only the footer.',
     { tabId: N('The tab to move. It keeps its id — this is the same tab, somewhere else.'),
       url: S('http or https. Subject to the same per-origin consent as everything else.'),
+      close: B('CLOSE this tab instead of navigating it. The opposite of newTab, and the thing to '
+        + 'do when a pass ends: lanes become tabs in the person\'s own window, and one run left 23 '
+        + 'of them behind because nothing could tidy up. Refused for the connection window (the '
+        + 'socket every session talks through) and for a tab the person has PINNED.'),
       newTab: B('Open a NEW tab instead of moving this one. Leaves a tab behind for the person '
         + 'to close, so use it only when they asked for a new tab, or when there is no tab to move.'),
       search: S('Search a site instead of naming a URL: the words to search for. With this, `url` '
@@ -227,7 +254,8 @@ const TOOLS = [
     ['url']),
 
   T('page_study',
-    'AN EMPTY growth.candidates MEANS "NOT THERE YET", NOT "NEVER". A lazy list often renders its '
+    'SCROLL BEFORE YOU STUDY. Everything this returns describes the page AS IT IS NOW, and most list pages mount ONE SCREENFUL and add the rest as you move down them: call page_grow until it reports grew:false, and only then read or study. Measured on shopee.com.br, a first read saw 14 product links and reported total:14 on a page that held 54 once grown — nothing about the first answer looked partial. A count taken before growing is a FLOOR, and every plan sized on it (tabs to open, pages to walk, whether to fan out) is scaled wrong. '
+    + 'AN EMPTY growth.candidates MEANS "NOT THERE YET", NOT "NEVER". A lazy list often renders its '
     + 'load-more only AFTER the first batch fills, so a study run at first paint truthfully finds '
     + 'nothing. Measured on a live storefront: 13 buttons on the page and no load-more at 10 rows; '
     + 'the same control appeared once the list was deep. Grow the list, then study again — do not '
@@ -240,7 +268,12 @@ const TOOLS = [
     + 'trusting the one it marks chosen: looksLikeFurniture (the candidate sits inside a footer, nav '
     + 'or aside landmark — measured on real sites where the engine picked a footer site-directory and '
     + 'a filter sidebar over the actual results) and distinctness (rows that all point at the same '
-    + 'place are one record repeated, which is how a filter panel outscores a product grid). Growth '
+    + 'place are one record repeated, which is how a filter panel outscores a product grid). '
+    + 'IF THE ONLY CANDIDATE IS FURNITURE, THE PAGE HAS NOT RENDERED — that is not a page without a '
+    + 'list, it is a page read too early, and the hint now says so. Re-read in a moment, or read '
+    + 'what the page FETCHES (tab_here with network) instead of what it shows. Measured on '
+    + 'shopee.com.br: one candidate, the footer, 5 rows, 8 links on a page holding 60 products. '
+    + 'Growth '
     + 'affordances come back verified:false — press one with page_grow to find out. They come from '
     + 'TWO sweeps and carry which one found them: position (a clickable sitting just under the '
     + 'list) and via:"findLoadMore", the hardened sweep that reads direct text and accepts a '
@@ -301,6 +334,16 @@ const TOOLS = [
         { enum: ['grow', 'walk', 'explore'] }),
       text: S('walk mode: what the person would CLICK, in their words. Prefer this over a '
         + 'selector — it survives a redesign that renames every class.'),
+      fill: S('TYPE THIS TEXT into the field named by `selector` — the third verb beside pressing '
+        + 'and choosing, and the one that was missing. A list reachable only through a filter, a '
+        + 'date range or a search box the site does not expose as a URL could not be reached at '
+        + 'all without it. REFUSED for a password field (that is the person\'s identity, not page '
+        + 'data — if a sign-in is in the way, say so and let THEM do it), for a hidden input (the '
+        + 'page\'s own token or state blob), and for anything that looks like payment, including '
+        + 'any field the page itself marks autocomplete="cc-*". It does NOT submit: filling and '
+        + 'sending are separate decisions, so press the form\'s control afterwards with '
+        + 'mode:"walk". The value is read BACK and returned, because a masked or length-capped '
+        + 'field can hold something other than what you sent.'),
       choose: S('walk mode: CHOOSE AN OPTION IN A <select>, by the option\'s visible words — '
         + '"Most Recent", "Highest rated", "100 per page". A <select> does not answer a click, so '
         + 'this is the only way to reach content that exists only behind a chosen option: sort '
@@ -334,7 +377,8 @@ const TOOLS = [
     ['tabId']),
 
   T('page_state',
-    'WATCH THE NETWORK: path "@net(<url substring>)" starts a watch on this tab that OUTLIVES the '
+    'SCROLL BEFORE YOU STUDY. Everything this returns describes the page AS IT IS NOW, and most list pages mount ONE SCREENFUL and add the rest as you move down them: call page_grow until it reports grew:false, and only then read or study. Measured on shopee.com.br, a first read saw 14 product links and reported total:14 on a page that held 54 once grown — nothing about the first answer looked partial. A count taken before growing is a FLOOR, and every plan sized on it (tabs to open, pages to walk, whether to fan out) is scaled wrong. '
+    + 'WATCH THE NETWORK: path "@net(<url substring>)" starts a watch on this tab that OUTLIVES the '
     + 'call, "@net(*)" watches EVERY response — images, fonts, stylesheets and documents as well as '
     + 'the data calls — "@net()" polls what has arrived SINCE THE LAST POLL, and "@net(stop)" ends '
     + 'it. A url substring is not a category filter either: ask for "cdn.example.com" and you get '
@@ -445,7 +489,29 @@ const TOOLS = [
         + 'For a whole history do NOT scroll up from the bottom — jump to the boundary first '
         + '(the app\'s own oldest-first URL, e.g. a trailing /0, or ?page=1 / sort=oldest) and '
         + 'then @collect downward. '
-        + 'These four ride this tool rather than being tools of their own, so a client holding a '
+        + '"@await(<css> :: <mode> :: <ms>)" WAITS FOR A CONDITION INSTEAD OF GUESSING A DURATION, '
+        + 'and it is the answer to almost every "it worked that time" in this system. Modes: '
+        + 'exists (default), gone, still (the count stopped changing), or a NUMBER meaning at least '
+        + 'that many matched. Reach for "gone" on a spinner or skeleton wherever one exists — '
+        + 'waiting for CONTENT cannot tell a slow page from an empty one, but a spinner leaving is '
+        + 'unambiguous. Reach for "still" when a grid paints in pieces, which is what makes a first '
+        + 'read say 14 on a page holding 54. It NEVER throws on timeout: ok:false comes back with '
+        + 'matched, peak and waitedMs, because how many arrived and which way the number was moving '
+        + 'is what tells you whether to wait longer or stop. page_harvest takes the same grammar as '
+        + 'its `awaitFor`, applied per page. '
+        + '"@fetch(<url>)" ASKS THE PAGE TO MAKE A REQUEST instead of you opening a tab for it — '
+        + 'SAME ORIGIN as the tab, GET only, the person\'s own session. THIS IS THE LEVER WHEN A '
+        + 'DETAILS PASS IS SLOW. Measured on shopee.com.br: one tab per product cost 15-20s each, '
+        + 'so 120 products ran for most of an hour and finished 48 — because a client-rendered '
+        + 'product page spends nearly all of that rendering images and trackers around ONE json it '
+        + 'fetched. Fetch that json and a record costs a fraction of a second. It also reaches what '
+        + 'an address bar cannot: a site that signs its own requests (Shopee hooks fetch and XHR '
+        + 'with an anti-crawler SDK and answers a bare navigation with error 90309999) signs this '
+        + 'one too, because it runs IN the page. Find the url once with tab_here({network:"*"}), '
+        + 'see which response held what you want, then replace the per-record navigation with '
+        + '@fetch on that url with the id substituted. Cross-origin is refused on purpose — the '
+        + 'consent the person gave is for the site in front of them. '
+        + 'These six ride this tool rather than being tools of their own, so a client holding a '
         + 'stale tool list can still reach them.'),
       reply: N('@collect only: cap how many rows come BACK, without capping how far it WALKS. '
         + 'They used to be one number, so keeping a reply small also stopped the scrolling — and a '
@@ -474,7 +540,8 @@ const TOOLS = [
     ['tabId']),
 
   T('list_extract',
-    'THE FAST PATH, AND THE ONE TO TRY FIRST. Reads the rows already on this page — seconds, no page '
+    'SCROLL BEFORE YOU STUDY. Everything this returns describes the page AS IT IS NOW, and most list pages mount ONE SCREENFUL and add the rest as you move down them: call page_grow until it reports grew:false, and only then read or study. Measured on shopee.com.br, a first read saw 14 product links and reported total:14 on a page that held 54 once grown — nothing about the first answer looked partial. A count taken before growing is a FLOOR, and every plan sized on it (tabs to open, pages to walk, whether to fan out) is scaled wrong. '
+    + 'THE FAST PATH, AND THE ONE TO TRY FIRST. Reads the rows already on this page — seconds, no page '
     + 'opens, no rate-limit surface. If everything you need is on the cards, stop here: page_harvest '
     + 'costs one page load PER ROW and is minutes for the same answer.\n'
     + 'Start reading the list on a tab into a table, following its pages. Returns a runId '
@@ -541,12 +608,31 @@ const TOOLS = [
     + 'file first. The reply carries `resolvedX` (a count) when this happened; nothing to ask for, '
     + 'it just means the file that landed is not necessarily the url the scan reported. For a post '
     + 'url or id that was never scanned, see `resolve_x_video` instead.',
-    { action: S('Which one: "status" or "stop" (need runId), "list", "get", "export" or "download" '
-      + '(need resultId).',
-      { enum: ['status', 'stop', 'list', 'get', 'export', 'download'] }),
+    { action: S('Which one: "status" or "stop" (need runId), "list", "get", "export", "download" '
+      + '(need resultId), or "merge" (needs resultIds).',
+      { enum: ['status', 'stop', 'list', 'get', 'export', 'download', 'merge'] }),
       runId: S('From list_extract or a backgrounded page_harvest. For action status and stop.'),
       resultId: S('From a finished run, or from action:"list". For action get and export.'),
-      limit: N('action get only: rows to return. Default 100, max 1000.'),
+      resultIds: { type: 'array', items: { type: 'string' },
+        description: 'action merge only: two or more resultIds to combine. TWO PASSES OVER THE '
+          + 'SAME LIST ARE ONE ANSWER — a thin page is usually transient, so re-running and '
+          + 'keeping the better of each row is the cheap way to finish a hard site. Measured over '
+          + '625 products: pass one read 529, pass two 563, only 10 failed both, union 615 (98%). '
+          + 'Merging happens in the browser; the rows never pass through you.' },
+      key: S('action merge only: the COLUMN that identifies a row across passes — usually the '
+        + 'source url or an id. Rows that have no value for it are kept and counted as `unkeyed` '
+        + 'rather than dropped. Within a matched row the LONGER value wins per field, which '
+        + 'matters because a column can report 100% filled while a third of it is "-" or a '
+        + 'truncated stub.'),
+      into: S('action merge only: save the merge as a NEW result under this name and return its '
+        + 'resultId, instead of returning the first 100 rows inline. Use this for anything you '
+        + 'intend to export.'),
+      limit: N('action get only: rows to return in THIS call. Default 100, max 1000.'),
+      offset: N('action get only: where to start, for taking a big table a page at a time. '
+        + 'Default 0. The reply carries nextOffset and `more` whenever rows remain — pass '
+        + 'nextOffset back here and repeat until truncated is false. Without this a table larger '
+        + 'than one reply could be started and never finished; for everything at once, '
+        + 'action:"export" writes a CSV and a file has no reply-size limit.'),
       columns: { type: 'array', items: { type: 'string' },
         description: 'action get only: only these columns. Omit for all of them.' },
       types: { type: 'array', items: { type: 'string' },

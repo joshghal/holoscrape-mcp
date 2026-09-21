@@ -92,6 +92,15 @@ let CLIENT_INFO = null;
 // Same prefix on both ends; the token rides in the WebSocket subprotocol.
 // DEV ONLY — PAIRING OFF, BY EXPLICIT LAUNCH FLAG.
 //
+// The pairing code exists because every process on this machine can reach this port and what is
+// behind it is a browser signed into someone's mail and bank. That reasoning does not change. What
+// this flag says is narrower: the person launching this server, by hand, with this argument, is the
+// developer of it, testing against their own browser, watching each call as it happens.
+//
+// It is a LAUNCH ARGUMENT and never a default: `npx holoscrape-mcp` — what every real user runs —
+// cannot reach this branch. It also is not enough on its own; the extension only auto-pairs in a
+// build made with `--unblock`, which `build.mjs` refuses to produce for prod. Two independent
+// dev-only gates, both of which a real install has shut.
 
 const TOKEN_PROTO = 'holoscrape.token.';
 
@@ -625,6 +634,101 @@ const SMALLER = {
   results_get: 'columns:["..."] to keep only the columns you need, then limit.',
 };
 
+// --- SPOOLING A REPLY THAT WILL NOT FIT -------------------------------------------------------
+//
+// A REFUSED REPLY USED TO DESTROY THE ANSWER, NOT JUST WITHHOLD IT.
+//
+// `REPLY_TOO_BIG` told the caller to ask for less, which is sound advice only when less exists.
+// For a map of everything a page fetched it does not: the point of `@net(*)` is that it is wide,
+// and `limit`/`fields`/`depth` page the ROWS while the bulk is each response's own paths map.
+// Worse, `@net()` returns what is new SINCE THE LAST POLL — so an oversized reply that returned
+// nothing had still marked those responses seen. Measured three times in one session against
+// shopee.co.id: 206,957 bytes captured, refused, and then unreachable. The data existed, was paid
+// for, and was thrown away by the transport.
+//
+// So the bytes are written to disk instead. The MCP server runs on the person's own machine and
+// already has `fs`; a file is cheap where a reply is not. The caller gets a path, an index and a
+// count — and then has grep, jq and a streaming read, which beat any paging protocol this channel
+// could have grown.
+//
+// WHY THIS IS SAFE AT THIS LAYER, AND WOULD NOT BE ONE LAYER UP: `text` here is the reply as it
+// was going to be sent, which means `page_state` has ALREADY masked every credential-shaped value
+// on its way out (see its own note on the mask). Spooling the serialized reply therefore writes
+// exactly what the caller would have read. Spooling the raw object instead would have turned this
+// into a credential bypass — the one trust tier the project treats as non-negotiable.
+const SPOOL_DIR = path.join(os.tmpdir(), 'holoscrape-spool', String(process.pid));
+const CHUNK_TARGET = Math.floor(MAX_REPLY * 0.8);   // a chunk any single read can swallow whole
+let spoolN = 0;
+
+// The one array worth splitting: the longest top-level one. Everything else is small enough that
+// the whole file answers it.
+function biggestArray(v) {
+  if (Array.isArray(v)) return { at: '$', rows: v };
+  if (!v || typeof v !== 'object') return null;
+  let best = null;
+  for (const [k, val] of Object.entries(v)) {
+    if (Array.isArray(val) && (!best || val.length > best.rows.length)) best = { at: `$.${k}`, rows: val };
+    else if (val && typeof val === 'object') {
+      for (const [k2, v2] of Object.entries(val)) {
+        if (Array.isArray(v2) && (!best || v2.length > best.rows.length)) best = { at: `$.${k}.${k2}`, rows: v2 };
+      }
+    }
+  }
+  return best;
+}
+
+function spool(value, text, name) {
+  try {
+    fs.mkdirSync(SPOOL_DIR, { recursive: true });
+    const stem = `${String(++spoolN).padStart(3, '0')}-${(name || 'reply').replace(/[^\w.-]+/g, '_')}`;
+    const whole = path.join(SPOOL_DIR, `${stem}.json`);
+    fs.writeFileSync(whole, text);
+
+    // CHUNKS, BECAUSE ONE 200KB FILE IS NOT OBVIOUSLY BETTER THAN ONE 200KB REPLY. Split the
+    // longest array into pieces each small enough to read in a single call, so the caller can
+    // work through them without a jq expression or a byte offset.
+    const big = biggestArray(value);
+    const chunks = [];
+    if (big && big.rows.length > 1) {
+      // MEASURED THE WAY IT IS WRITTEN. The first version budgeted with `JSON.stringify(row)` and
+      // wrote with `JSON.stringify(cur, null, 2)` — compact in, pretty out — so every chunk came
+      // out about 3% over the cap it was supposed to respect. Caught by this file's own test at
+      // 38,629 bytes against a 37,500 limit, which is exactly the kind of near-miss that would
+      // have looked fine in review. The candidate array is now serialized the way it will be
+      // stored, and the row that pushes it over starts the next chunk instead.
+      const write = (rows) => {
+        const f = path.join(SPOOL_DIR, `${stem}.part${String(chunks.length).padStart(3, '0')}.json`);
+        fs.writeFileSync(f, JSON.stringify(rows, null, 2));
+        chunks.push({ file: f, rows: rows.length });
+      };
+      let cur = [];
+      for (const row of big.rows) {
+        cur.push(row);
+        if (cur.length > 1 && JSON.stringify(cur, null, 2).length > CHUNK_TARGET) {
+          cur.pop();
+          write(cur);
+          cur = [row];
+        }
+      }
+      if (cur.length) write(cur);
+    }
+    return { whole, chunks, at: big ? big.at : '', rows: big ? big.rows : null };
+  } catch (e) {
+    return { error: e.message };
+  }
+}
+
+// A few words per row, so the index says WHICH row to open rather than only how many there are.
+// Urls first: a network map is a list of urls and nothing else identifies a response.
+function labelOf(row) {
+  if (row == null) return '';
+  if (typeof row !== 'object') return String(row).slice(0, 120);
+  for (const k of ['url', 'href', 'name', 'title', 'id', 'path', 'selector', 'text']) {
+    if (typeof row[k] === 'string' && row[k]) return `${k}=${row[k].slice(0, 120)}`;
+  }
+  return Object.keys(row).slice(0, 6).join(',');
+}
+
 function asResult(value, name = '') {
   const text = JSON.stringify(value, null, 2);
   if (text.length <= MAX_REPLY) return { content: [{ type: 'text', text }] };
@@ -643,6 +747,20 @@ function asResult(value, name = '') {
           : Array.isArray(value) ? value : null;
   const sample = rows?.[0] && typeof rows[0] === 'object' ? Object.keys(rows[0]).slice(0, 40) : null;
 
+  // WRITTEN TO DISK BEFORE THE REFUSAL IS COMPOSED, so the answer survives being un-returnable.
+  const put = spool(value, text, name);
+
+  // An index of the rows, not the rows: enough to say WHICH one to open. Capped at 60 so the
+  // index itself can never become the thing that is too big.
+  //
+  // INDEXED FROM THE ARRAY THAT WAS ACTUALLY CHUNKED, not from `rows` above. `rows` only knows
+  // four shapes (`value.rows`, `value.value.items`, `value.value`, `value.items`) and a network
+  // poll is none of them — its rows live under `value.responses`, so the index came back empty on
+  // the exact reply this whole mechanism was built for. `biggestArray` already found that array
+  // to split it; the index uses the same answer.
+  const indexRows = put.rows || rows;
+  const index = indexRows ? indexRows.slice(0, 60).map(labelOf).filter(Boolean) : undefined;
+
   return {
     content: [{ type: 'text', text: JSON.stringify({
       error: 'REPLY_TOO_BIG',
@@ -650,9 +768,27 @@ function asResult(value, name = '') {
       limit: MAX_REPLY,
       rows: rows ? rows.length : undefined,
       fieldsOnFirstRow: sample || undefined,
-      why: 'Nothing was returned. A reply this size cannot be read, and returning the front of it '
-        + 'would look like the whole answer — so the request has to get smaller, not the response.',
-      tell: SMALLER[name] || 'ask for less: a narrower selector, fewer rows, or a shallower read.',
+      // NOT "nothing was returned" any more — that was the old, worse truth. The bytes are on
+      // disk, which matters most for a poll that consumes what it reports: `@net()` hands back
+      // what is new SINCE THE LAST POLL, so a refusal used to lose those responses for good.
+      why: put.whole
+        ? 'Too big to return, so it was written to disk instead — nothing was lost. Read it with '
+          + 'your own file tools; grep and jq are better at this than any reply could be.'
+        : 'Nothing was returned. A reply this size cannot be read, and returning the front of it '
+          + 'would look like the whole answer — so the request has to get smaller, not the response.',
+      ...(put.whole ? {
+        spooled: put.whole,
+        ...(put.chunks.length > 1 ? {
+          chunks: put.chunks.map((c) => c.file),
+          chunkedFrom: put.at,
+          chunkRows: put.chunks.map((c) => c.rows),
+        } : {}),
+        index: index && index.length ? index : undefined,
+      } : {}),
+      ...(put.error ? { spoolFailed: put.error } : {}),
+      tell: put.whole
+        ? 'open the file, or one chunk at a time — the request does not have to get smaller.'
+        : (SMALLER[name] || 'ask for less: a narrower selector, fewer rows, or a shallower read.'),
       ...(sample ? { example: `${name} fields:["${sample.slice(0, 3).join('","')}"]` } : {}),
     }, null, 2) }],
     isError: true,

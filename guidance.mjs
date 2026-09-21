@@ -13,6 +13,74 @@ export const INSTRUCTIONS = `HoloScrape drives the person's OWN already-signed-i
 no cloud browser and no separate profile: every page you read is the page they would see, with
 their logins and their IP. Treat their browser as someone's desk you are working at.
 
+# THE PAGE LOADED IS NOT THE PAGE READY, AND THIS IS THE COSTLIEST MISTAKE HERE
+
+A document is complete when its HTML has arrived. On anything that paints from JavaScript — every
+marketplace, most dashboards, every Shopee domain — that moment is a header, a spinner and nothing
+else. Reads that land there SUCCEED. They answer about a page that does not exist yet.
+
+It never looks like an error, which is why it costs whole sessions. One afternoon, all four:
+
+  page_study             one list, looksLikeFurniture:true, 5 rows
+                         -> taken as the product grid. It was the FOOTER; the grid had not mounted.
+  page_state @dom(...)   NO_MATCH on a reviews selector, twice
+                         -> concluded "reviews are blocked in background tabs". They were not. The
+                            section mounts ~2s late; the same selector then returned 6 reviews.
+  the search grid        13-20 anchors per read
+                         -> reported "27 of 240 items". The page holds 60. It paints in pieces.
+  page_harvest           4 rows, failedCount 0
+                         -> reported success over 4 copies of the site's schema.org boilerplate.
+
+The third and fourth are the dangerous shape: A PARTIAL ANSWER IS WORSE THAN AN EMPTY ONE, because
+zero is obviously wrong and thirteen is not. Anything you size a plan on — how many tabs to open,
+how many pages to walk, whether to fan out at all — must come from a count you watched STOP MOVING.
+
+The rules, in order of how much they save you:
+
+1. NEVER CONCLUDE "ABSENT" FROM ONE READ. Not a selector, not a section, not a field. Read it twice,
+   a second or two apart. NO_MATCH now says which case it is — believe it.
+2. A COUNT STILL RISING IS A FLOOR, NOT A TOTAL. tab_here returns rowsOnPage, and sets rising:true
+   when the number had not settled before its budget ran out. Never plan against a rising count.
+3. GROW THE PAGE BEFORE YOU COUNT IT, EVERY TIME, AS PART OF EXPLORING RATHER THAN AS A REPAIR.
+   A list page is not finished when it is painted; most of them mount a screenful and add the rest
+   as you move down it. So the exploration sequence on ANY list is: read it, then page_grow, then
+   page_grow AGAIN, and only believe the number when a grow reports grew:false. Measured on
+   shopee.com.br: a first read saw 14 product links and said total:14; one page_grow took it to 54.
+   Nothing about the first answer looked partial. If you skip this you are not reading a list, you
+   are reading whatever fit on one screen, and every plan you build on it is scaled wrong.
+   AND DO NOT ASSUME THE GROWN NUMBER IS THE SITE'S NUMBER either: that same page settled at 54
+   anchors where the site serves 60 a page, because some cards are ads or link differently. Say
+   which number you are holding and how you got it.
+4. CHECK hasList BEFORE YOU HARVEST. tab_here returns it. hasList:false on a page you believe is a
+   list means you are early — or the rows are FETCHED rather than rendered, which is rule 5.
+5. ON A CLIENT-RENDERED SITE, PREFER WHAT THE PAGE FETCHES TO WHAT IT SHOWS. Navigate with
+   network:"<part of the api url>" and read the JSON. It is complete, its fields are already named,
+   and it does not care whether React has mounted. One response is routinely a whole page of rows.
+6. NAVIGATING STRAIGHT TO AN API URL IS NOT THE SAME THING and usually fails: the endpoint checks
+   headers and tokens the PAGE sends and an address bar does not. Shopee answers error 90309999.
+   Capture the call the page makes instead.
+7. SECTIONS BELOW THE FOLD OFTEN MOUNT ONLY WHEN SCROLLED TO — reviews and specs are the usual
+   ones. Start the watch first, then scroll, then read. SCROLL WITH page_grow scroll:true AND A
+   tabId: it works on a tab that is NOT the active one, needs no focus, and never asks the person
+   to look at anything. A run that decided it could not reach a section because it was told not to
+   bring tabs to the front had the tool for it the whole time, and asked for a permission it did
+   not need — see rule 8. Note that page_harvest does NOT scroll the pages it opens, so a field
+   that only mounts on scroll comes back EMPTY from a harvest: reach it with page_grow, or say the
+   field is unreachable that way rather than reporting the record as having none.
+8. WHEN A THEORY NEEDS THE BROWSER TO BE MISBEHAVING — tab focus, throttling, silent blocking —
+   SUSPECT YOUR OWN TIMING FIRST. It is the cheaper explanation and it was the right one every
+   single time above.
+9. THE ONE SHAPE WHERE THE SITE REALLY IS REFUSING, AND IT DOES NOT LOOK LIKE A BLOCK. A challenge
+   can be scoped to a single ENDPOINT rather than to the page. The page loads, every other field
+   is full, and ONE section is empty on record after record. Measured on shopee.co.id: the reviews
+   widget fetched, and the site answered with /verify/captcha carrying app_key=Rating.PC and
+   scene=crawler_item — a challenge aimed at the ratings API, not at the product page, which had
+   rendered perfectly. A run reported "no captcha, no block" while that was happening, because it
+   only ever looked at the page. HOW TO TELL: the SAME field empty across several records while
+   the rest of each record is complete. Then read the tab url and look for /verify. DO NOT RETRY —
+   every retry is one more flagged request, and one run spent twelve minutes across four retry
+   rounds making it worse. Stop, and say which endpoint is being refused.
+
 # Cheapest thing that answers the question
 
 ASK WHAT THE LIST PAGE ALREADY SHOWS BEFORE OPENING ANYTHING. Most asks are answered by the rows in
@@ -33,9 +101,15 @@ pages where 5 lanes returned 96 thin on 625.
 # Which tool
 
 EVERY TOOL NAMED IN THIS DOCUMENT EXISTS ON THIS SERVER. Your client may have shown you only a few
-of the twenty-one — schemas are fetched on demand, and a keyword search returns the top matches, not
-the set. So the tools you were handed are NOT the tools there are. Before concluding that something
-is impossible, look for it here by name and ask for that exact name.
+of the TEN — schemas are fetched on demand, and a keyword search returns the top matches, not the
+set. So the tools you were handed are NOT the tools there are. Before concluding that something is
+impossible, look for it here by name and ask for that exact name.
+
+The ten: current_page, tabs_list, tab_here, page_study, page_grow, page_state, list_extract,
+page_harvest, results, resolve_x_video. Two of them carry most of the surface: page_state takes the
+pseudo-paths below (@dom, @html, @map, @collect, @fetch, @net) and results takes actions (status,
+stop, list, get, export, download). Counting those as separate tools is how this line used to say
+"twenty-one", which sent a reader hunting for eleven tool names that do not exist.
 
 Measured, twice: a session reported "there is no direct navigate-this-tab-to-a-URL primitive" and
 re-clicked through a list page for every record. tab_here is precisely that primitive and had been
@@ -155,7 +229,8 @@ have been deleted. Safe for excluding dormant rows; never for asserting a row is
 
 # The list on screen is often not the whole list
 
-Two different causes, and scrolling only fixes one:
+Three different causes, and scrolling only fixes one:
+- NOT PAINTED YET — the commonest, and the only one that LOOKS like a working read. See the FIRST section; a grid of sixty paints in pieces and an early read reports thirteen with full confidence.
 - VIRTUALIZED — rows exist but only the mounted window is in the DOM. @collect handles it.
 - COLLAPSED — a closed section renders ZERO children. Scrolling cannot reveal what is not there.
   Expand it (@map) or find the app's dedicated browse-all view, which usually renders everything.
