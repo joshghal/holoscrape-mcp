@@ -23,14 +23,34 @@ Then pair it once:
 npx -y holoscrape-mcp --code
 ```
 
-prints a one-time code. Open the HoloScrape side panel in Chrome and enter it there. That's the whole
-setup — the code is remembered, so this is a one-time step, not a per-session one.
+prints a one-time code. Open the HoloScrape side panel in Chrome and enter it there. The code is
+remembered, so this is a one-time step, not a per-session one.
+
+### Unlock the full HoloScrape MCP: the headless companion (one more command, once)
+
+```
+npx -y holoscrape-mcp --install-browser
+```
+
+This downloads Chromium for Testing (about 150 MB) through Playwright. It is the only step that
+downloads anything, and it is never done silently — you run it.
+
+What it unlocks: a **companion** browser the server launches itself, headless, with the same
+extension loaded and **no session in it**. Your own Chrome stays the default and the only place a
+signed-in site is ever read. The companion steps in, on its own, when a lane in your Chrome cannot
+paint a page: DevTools open on the tab, or a managed Chrome that blocks the debugger (a policy
+Chrome 155 ships in October 2026). It also steps back out: a page that wants your login is bounced
+in the companion and re-run in your Chrome. Every reply that switched says so (`switched`).
+
+Without this step everything still works in your Chrome; a reply that would have switched carries
+one sentence telling you to run the command above. To turn the companion off for a session, set
+`HOLOSCRAPE_COMPANION=0` in the server's env.
 
 ## What it can do
 
-Once paired, an agent can read whatever list is on a page you've allowed — a search results grid, a
-directory listing, a table — and walk its pages. Nothing runs until you've explicitly allowed the
-site in the HoloScrape panel; an agent cannot grant that to itself.
+Once paired, an agent can read whatever list is on a page in this browser — a search results grid,
+a directory listing, a table — and walk its pages. Pairing is the consent; a short list of
+restricted hosts stays off limits no matter what.
 
 On a page with more than one scrollable region — a chat app's sidebar list beside an open
 conversation, a filter rail beside results — the automatic ranking favours the denser pane, which
@@ -75,7 +95,8 @@ the server → the WebSocket → the extension → a real tab — works before p
 ## Requirements
 
 - Node.js 18+
-- The [HoloScrape](https://github.com/joshghal/holoscrape) Chrome extension, installed and paired
+- The HoloScrape Chrome extension, installed and paired
+- Optional, for the headless companion: Chromium for Testing via `npx -y holoscrape-mcp --install-browser`
 
 ## License
 

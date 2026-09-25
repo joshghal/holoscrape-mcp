@@ -1,0 +1,21 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>HoloScrape — parser</title>
+<!--
+  A document with nothing in it, whose entire job is to have a DOMParser.
+
+  The third step now FETCHES a business's website before deciding whether to open it (see
+  `driveSites`), and a fetch returns bytes. Turning bytes into something `pageMail` can read needs
+  `DOMParser`, and an MV3 service worker does not have one — it has no DOM at all. Chrome's answer
+  to exactly this is the offscreen document, whose `DOM_PARSER` reason exists for this case and no
+  other.
+
+  The alternative was a second extractor that reads HTML with regular expressions, and that is the
+  mistake this file avoids: two readers means two ideas of what an email is, two junk lists and two
+  sets of bugs, and the platform / site-year / tracking columns would have had to be found a second
+  way as well. One reader, two ways of reaching it.
+
+  Nothing here executes anything it is given. `DOMParser` does not run scripts, load subresources or
+  resolve anything on the network; the parsed document is inert and is never attached to this page.
+-->
+<script type="module" src="offscreen.js"></script>

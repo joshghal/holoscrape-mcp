@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>HoloScrape — connected to your AI agent</title>
+<style>
+  /* REVAMPED: the first version explained itself in three paragraphs. One line now carries the
+     warning that matters (closing this disconnects you); everything else was reference material
+     nobody re-reads after the first minute, so it moved to a collapsed <details>. */
+  /* The side panel's ground: the same navy, ink and combed stripe as sidepanel.html. Dark only,
+     like the panel it belongs to — the light variant was the one window that did not look like it. */
+  :root { color-scheme: dark; }
+  body {
+    margin: 0; padding: 28px 26px;
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    background: #061726; color: #eef4fb; position: relative; isolation: isolate;
+    display: flex; flex-direction: column; gap: 16px; min-height: 100vh; box-sizing: border-box;
+  }
+  body::after {
+    content: ''; position: fixed; inset: 0; z-index: -1; pointer-events: none;
+    background: repeating-linear-gradient(64deg, rgba(255,255,255,.028) 0 1px, rgba(255,255,255,0) 1px 7px);
+    mask-image: linear-gradient(180deg, #000 0, transparent 55%);
+    -webkit-mask-image: linear-gradient(180deg, #000 0, transparent 55%);
+  }
+
+  /* THREE SIZES, NOT FIVE. The first pass clustered 11 / 12 / 12.5 / 14 / 18 — close enough together
+     to read as noise rather than hierarchy. Down to 20 / 14 / 11, each a clean step from the last
+     (20/14 ≈ 1.43, 14/11 ≈ 1.27), so the window reads in the order it matters: what it's doing, then
+     the warning, then everything else. */
+  .brand { font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; opacity: 0.5; }
+
+  .status { display: flex; align-items: center; gap: 10px; }
+  .word { font-size: 20px; font-weight: 650; letter-spacing: -0.01em; }
+  .on .word { color: #f0a13c; }
+  .off .word { color: #8b98a8; }
+
+  /* THE PULSE. A steady dot reads as decoration; a breathing one reads as "this is doing something
+     right now", which is the one fact this whole window exists to communicate. Scale + opacity only
+     — never a layout property — so it costs nothing and never causes jank. */
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: currentColor; flex: 0 0 auto; position: relative; }
+  .on .dot::after {
+    content: ''; position: absolute; inset: -6px; border-radius: 50%;
+    background: currentColor; opacity: 0.35;
+    animation: pulse 2.2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  }
+  @keyframes pulse {
+    0%   { transform: scale(0.6); opacity: 0.35; }
+    70%  { transform: scale(1.6); opacity: 0; }
+    100% { transform: scale(1.6); opacity: 0; }
+  }
+  @media (prefers-reduced-motion: reduce) { .on .dot::after { animation: none; opacity: 0.25; } }
+
+  .warn {
+    /* Inherits the 14px body size rather than its own in-between value — it is the second most
+       important line in the window, so it takes the middle step, not a fourth size of its own. */
+    opacity: 0.9; padding: 10px 12px; border-radius: 9px;
+    background: rgba(240,161,60,0.09); border: 1px solid rgba(240,161,60,0.28);
+  }
+  .warn b { font-weight: 650; }
+
+  details { margin-top: auto; font-size: 11px; opacity: 0.6; }
+  summary { cursor: pointer; user-select: none; }
+  details p { margin: 8px 0 0; line-height: 1.5; }
+  .why { font-size: 11px; opacity: 0.55; }
+
+  /* ONE ROW PER HOST — replaces a single Disconnect for everything. A person who wants to keep three
+     agents and drop one needs to say which one; a bulk switch cannot say that. */
+  .hosts { display: flex; flex-direction: column; gap: 6px; }
+  .host {
+    display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 7px;
+    background: rgba(255,255,255,.035); border: 1px solid rgba(255,255,255,.08);
+    font-size: 12.5px;
+  }
+  .host.released { opacity: .6; }
+  .hwho { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .hat { font-size: 11px; opacity: .55; font-variant-numeric: tabular-nums; flex: 0 0 auto; }
+  .hbtns { display: flex; gap: 6px; flex: 0 0 auto; }
+  .host button {
+    flex: 0 0 auto; font: inherit; font-size: 12px; font-weight: 500; cursor: pointer;
+    padding: 5px 11px; border-radius: 6px; border: 1px solid rgba(255,255,255,.10);
+    background: rgba(255,255,255,.05); color: #8fa8c4;
+    transition: background .13s ease, color .13s ease, border-color .13s ease;
+  }
+  .host button:hover { background: rgba(255,110,96,.12); color: #eef4fb; border-color: rgba(255,110,96,.5); }
+  .host.released button:hover { background: rgba(255,182,72,.10); border-color: rgba(255,182,72,.5); }
+  .host button:focus-visible { outline: 2px solid #ffb648; outline-offset: 2px; }
+  /* A PERMANENT TINT, NOT JUST ON HOVER. Release is reversible — neutral until you touch it. End
+     session ends a process; it reads as further along the same red without needing a solid fill,
+     which this file's own Stop button already treats as too loud for something that is not the
+     point of the screen. */
+  .host button.kill { border-color: rgba(255,110,96,.30); color: #ff9088; }
+  .host button.kill:hover { background: rgba(255,110,96,.16); border-color: rgba(255,110,96,.6); color: #fff; }
+</style>
+</head>
+<body>
+  <div class="brand">HoloScrape</div>
+
+  <div class="status off" id="status">
+    <span class="dot"></span>
+    <span class="word" id="word">connecting…</span>
+  </div>
+
+  <div class="warn"><b>Keep this window open</b> — closing it disconnects your agents.</div>
+
+  <div class="hosts" id="hosts"></div>
+
+  <p class="why" id="why"></p>
+
+  <details>
+    <summary>What is this?</summary>
+    <!-- Was "read lists in THIS browser" — misleading precisely here, because this popup IS a
+         separate window from the one doing any browsing. "This" read as pointing at itself: a
+         status light with no tabs and no lists to read. "Your browser" says what was meant —
+         wherever you're signed in, not this particular window. -->
+    <p>Claude Code, Cursor or Windsurf can read lists in <b>your</b> browser, in your own signed-in
+       session — nothing is uploaded, no password is ever shared. Every site still needs your
+       approval in the HoloScrape side panel.</p>
+  </details>
+
+  <script src="bridge-window.js" type="module"></script>
+</body>
+</html>

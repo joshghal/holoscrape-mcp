@@ -1,124 +1,9 @@
-// The operating manual. Two strings: BRIEF rides the handshake, INSTRUCTIONS is served on demand.
-//
-// WHY THIS EXISTS AS A STRING IN THE PACKAGE AND NOT AS A FILE IN THE REPO. Everything an agent
-// will ever know about this server arrives over the wire: the tool list, the parameter schemas,
-// and this. Someone running `npx -y holoscrape-mcp` on a machine that has never seen the source
-// gets no README, no design notes, and none of the hard-won operational facts below. Written in a
-// repo doc they teach the author alone. Written here they travel.
-//
-// WHY IT IS TWO STRINGS NOW. The whole manual used to be sent as MCP `instructions` — 27,561 chars
-// on 2026-09-22 — and Claude Code keeps about the first 2,300. So 18 of its 19 sections reached no
-// agent at all, while every session still paid for the text in its handshake. Neither reference
-// server sends `instructions`; both ship a short surface and a skill beside it. So:
-//   BRIEF          <= 2,000 chars. Only what must be known BEFORE the first call, and how to get
-//                  the rest. index.mjs sends this, plus the build identity, as `instructions`.
-//   INSTRUCTIONS   the long doctrine, organised by the SITUATION an agent is in when it needs the
-//                  section rather than by the order the lessons were learned. Served by
-//                  results action:"guide" a section at a time, whole as the MCP resource
-//                  holoscrape://guide, and shipped as skill/SKILL.md for clients that load skills.
-//
-// skill/SKILL.md IS THIS STRING UNDER A FRONTMATTER, NOT A SECOND MANUAL. Two hand-kept copies are
-// two manuals by the end of the month; test/mcp-surface-budget.mjs fails when they differ. After
-// editing the doctrine, regenerate it from the repo root:
-//   node -e "import('./mcp/guidance.mjs').then(m=>require('fs').writeFileSync('mcp/skill/SKILL.md',m.SKILL_FRONTMATTER+m.INSTRUCTIONS.trim()+'\n'))"
-//
-// THE DOCTRINE IS ONE TEMPLATE LITERAL AND AN UNESCAPED BACKTICK IN IT KILLS THE WHOLE SERVER
-// (test/guidance-loads.mjs — broken three times in one day). That test reads from the literal's
-// opening backtick to the LAST backtick in this file, so NOTHING below the doctrine may contain one,
-// comments included. Everything else therefore lives above it, and the doctrine itself is written
-// without backticks at all: names are quoted "like this".
-//
-// The facts below were each paid for by a failed session.
+---
+name: holoscrape
+description: Operating guide for the HoloScrape MCP server (current_page, tab_here, page_study, page_grow, page_state, list_extract, page_harvest, results, resolve_x_video). Use when extracting lists, tables or record pages from the person's own signed-in Chrome through HoloScrape, and especially when a read came back short, empty or partial, when choosing between the list page and the record pages, when using page_state pseudo-paths, or when a site shows a check.
+---
 
-export const BRIEF = [
-  'HoloScrape reads pages in the person\'s OWN signed-in Chrome: their logins, their IP, their tabs.',
-  'Treat it as someone\'s desk.',
-  '',
-  'START with current_page (the tab they look at) or tab_here (point a tab at a URL). Both',
-  'return a tabId: capture it once and pass it everywhere.',
-  '',
-  'ROWS COME BACK BY REFERENCE. list_extract and page_harvest return counts and a runId or resultId,',
-  'never rows. Finish with results: get for a look, export for a CSV in Downloads, or',
-  'saveTo:"/abs/path.csv" for a file the server writes. Same fields off many pages: ONE',
-  'page_harvest call; a loop of visits is refused.',
-  '',
-  'READ "page" AND "hint" IN EVERY REPLY. page is the state the tab was read in: hidden:true or',
-  'frames:false means it was not painting, settled:false means the wait hit its cap; either way a',
-  'count is a FLOOR and an empty read is not an absence. hint names the next call when something',
-  'is about to go wrong. Never conclude "absent" from one read; check the other layer (rendered',
-  'page, or the app\'s store via page_state) first.',
-  '',
-  'THE FULL GUIDE IS ON DEMAND: results {action:"guide"} lists its sections, topic:"<word>" returns',
-  'one, no browser needed. Whole text: resource holoscrape://guide, or skill/SKILL.md.',
-  'Read the matching section before a first page_harvest, a page_state pseudo-path (@dom @net',
-  '@collect …), or when a site pushes back.',
-].join('\n');
-
-// ONE PARAGRAPH MORE, ONLY WHEN THE COMPANION IS ON (the default; HOLOSCRAPE_COMPANION=0 removes
-// it). A session without one must not pay for a line about a browser it does not have. BRIEF above
-// was trimmed by the same number of chars so BRIEF + this + the build identity still fit under the
-// 2,000 a client keeps.
-//
-// IT SAYS HOW AND WHEN, NOT ONLY THAT. The first version said the companion "may answer when a lane
-// cannot paint" — true, and useless: measured 2026-09-23, an agent told "I'm debugging in this eBay
-// tab, don't touch it" with no eBay tab open listed the tabs and asked the person for a URL. The
-// automatic switch fires only after the person's browser fails a read; "don't touch my browser"
-// and "there is no tab for this" are conditions the agent has to act on ITSELF, with where.
-export const BRIEF_COMPANION = 'COMPANION: where:"companion" on tab_here, page_harvest, list_extract, page_study, '
-  + 'page_grow or page_state reads in a private headless Chromium: no login, public pages only, a login '
-  + 'wall hands the job back. Pick it yourself when their tabs must stay untouched or no tab is open; it '
-  + 'also steps in on its own when a lane here cannot paint ("switched"). Guide: companion.';
-
-// What a skill loader reads to decide whether to load the body: when, not what.
-export const SKILL_FRONTMATTER = [
-  '---',
-  'name: holoscrape',
-  'description: Operating guide for the HoloScrape MCP server (current_page, tab_here, page_study, page_grow, page_state, list_extract, page_harvest, results, resolve_x_video). Use when extracting lists, tables or record pages from the person\'s own signed-in Chrome through HoloScrape, and especially when a read came back short, empty or partial, when choosing between the list page and the record pages, when using page_state pseudo-paths, or when a site shows a check.',
-  '---',
-  '',
-  '',
-].join('\n');
-
-// ONE SECTION AT A TIME, BECAUSE THE WHOLE IS BIGGER THAN A REPLY MAY BE. The doctrine is past the
-// 37,500-char reply ceiling in index.mjs, so handing it over whole through a tool would be refused
-// and spooled; an agent that wants one answer should not pay for nineteen anyway. Split on the
-// top-level "# " headings, which are written as situations so a word from the task usually finds
-// its section.
-//
-// A TOPIC THAT NAMES NO TITLE SEARCHES THE BODIES. "@net", "lanes" and "captcha" are in no heading,
-// and "no such topic" would be the wrong answer about text that is plainly there. A topic that
-// matches nothing at all returns the index again with the miss named, never an empty success.
-// A topic is the first few words of the title that carry meaning: "when-you-are-about-to" names
-// nothing, "count-study-size-list" names the section.
-const FILLER = new Set(['when', 'you', 'are', 'a', 'an', 'the', 'to', 'is', 'and', 'or', 'of', 'with', 'what', 'it',
-  'has', 'have', 'not', 'in', 'on', 'that', 'this', 'your', 'about', 'will', 'just', 'between', 'like', 'looks']);
-const slug = (title) => title.toLowerCase().split(':')[0].replace(/'/g, '').replace(/[^a-z0-9]+/g, ' ').trim().split(' ')
-  .filter((w) => !FILLER.has(w)).slice(0, 4).join('-');
-function sections() {
-  const parts = ('\n' + INSTRUCTIONS).split(/\n(?=# )/);
-  return parts.map((text, i) => {
-    const body = text.trim();
-    const title = i === 0 && !body.startsWith('# ') ? 'What this server is' : body.split('\n')[0].replace(/^# /, '');
-    return { topic: i === 0 && !body.startsWith('# ') ? 'start' : slug(title), title, text: body };
-  }).filter((s) => s.text);
-}
-export function guide(topic) {
-  const all = sections();
-  const index = (list) => list.map((s) => ({ topic: s.topic, title: s.title, chars: s.text.length }));
-  const how = 'results {action:"guide", topic:"<topic, or any word>"} returns one section. The whole '
-    + 'text is the MCP resource holoscrape://guide.';
-  const want = String(topic || '').trim().toLowerCase();
-  if (!want) return { sections: index(all), how };
-  const byTitle = all.filter((s) => s.topic === want || s.topic.includes(slug(want)) || s.title.toLowerCase().includes(want));
-  if (byTitle.length === 1) return { topic: byTitle[0].topic, title: byTitle[0].title, text: byTitle[0].text };
-  if (byTitle.length > 1) return { matched: want, sections: index(byTitle), how };
-  const byBody = all.filter((s) => s.text.toLowerCase().includes(want));
-  if (byBody.length === 1) return { topic: byBody[0].topic, title: byBody[0].title, text: byBody[0].text };
-  if (byBody.length) return { mentionedIn: want, sections: index(byBody), how };
-  return { noMatch: topic, sections: index(all), how };
-}
-
-export const INSTRUCTIONS = `HoloScrape drives the person's OWN already-signed-in Chrome. There is
+HoloScrape drives the person's OWN already-signed-in Chrome. There is
 no cloud browser and no separate profile: every page you read is the page they would see, with
 their logins and their IP. Treat their browser as someone's desk you are working at.
 
@@ -519,7 +404,7 @@ what state this app has (bootstrap globals like __INITIAL_STATE__ or __NEXT_DATA
 globals, React/Vue roots, the webpack module registry), each with a short shape summary and the
 exact path prefix to read it with; call again with path set to one of those to read that slice.
 There is no way to pass code — only a data path ("chats[0].id", "__INITIAL_STATE__.chats[0]",
-"@stores.0.getState", "@mod[\\"WAWebContactCollection\\"].ContactCollection"), which is walked as
+"@stores.0.getState", "@mod[\"WAWebContactCollection\"].ContactCollection"), which is walked as
 properties and never evaluated. Dots, [0] for an index, ["any key"] for a key that is not a plain
 word.
 
@@ -1143,4 +1028,4 @@ have been deleted. Safe for excluding dormant rows; never for asserting a row is
 Say what you actually checked. "This field is not available" after reading one layer, or "the list
 ended" on a capped harvest, is worse than no answer: it closes a question that was still open. When
 a run comes back short, the honest report names which layer was read, what ended said, what the
-page header said about the tab it was read in, and what you have not tried yet.`;
+page header said about the tab it was read in, and what you have not tried yet.

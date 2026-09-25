@@ -1,7 +1,7 @@
 {
   "name": "holoscrape-mcp",
-  "version": "0.1.0",
-  "description": "Give an AI agent your own logged-in browser: HoloScrape's extraction engine over MCP, running locally.",
+  "version": "0.2.0",
+  "description": "Give an AI agent your own logged-in browser: HoloScrape's extraction engine over MCP, running locally \u2014 with a headless companion for public pages when a lane in your Chrome cannot paint.",
   "type": "module",
   "bin": {
     "holoscrape-mcp": "index.mjs"
@@ -11,6 +11,8 @@
     "tools.mjs",
     "guidance.mjs",
     "x-video-resolve.js",
+    "skill/",
+    "extension/",
     "README.md"
   ],
   "engines": {
@@ -28,5 +30,8 @@
     "scraping",
     "chrome-extension",
     "claude"
-  ]
+  ],
+  "dependencies": {
+    "playwright-core": "^1.58.2"
+  }
 }

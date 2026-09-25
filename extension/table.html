@@ -1,0 +1,954 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>HoloScrape — Results</title>
+<style>
+  /* Bundled, not fetched: an extension page has no business reaching a CDN for
+     a font, and a local file also works offline and on first paint. Latin subset,
+     32KB. Licence in public/font/LICENSE.txt. */
+  @font-face{
+    font-family:"Roboto Mono";
+    src:url("public/font/roboto-mono.woff2") format("woff2");
+    font-weight:400 500;font-style:normal;font-display:swap;
+  }
+  /* Palette and type taken from stripe.com's computed styles, not from memory:
+     the aurora stops, the 6px radius, the layered low-alpha shadows, and the
+     light-weight display type with tight negative tracking (their h1 is 300). */
+  :root {
+    color-scheme: dark;
+    --navy-900:#061726; --navy-800:#0a2540; --navy-700:#0f3155;
+    --ink:#eef4fb; --slate:#8fa8c4; --slate-dim:#5d789a;
+    --line:rgba(255,255,255,.09); --line-soft:rgba(255,255,255,.05);
+    --signal:#ffb648; --signal-2:#ffcf5e;
+    --a1:#7232f1; --a2:#fb76fa; --a3:#ffcf5e; --a4:#533afd; --a5:#f363f3;
+    --glass:rgba(255,255,255,.055);
+    --r-1:3px; --r-2:5px; --r-3:10px;
+    --shadow:0 1px 2px rgba(3,10,20,.28), 0 8px 18px -6px rgba(3,10,20,.34),
+             0 24px 48px -14px rgba(3,10,20,.42), 0 48px 88px -32px rgba(3,10,20,.5);
+    --mono:"Roboto Mono",ui-monospace,"SF Mono",Menlo,monospace;
+    /* One height for every control on the toolbar row. Left to their own
+       padding they each resolved differently and nothing sat on a shared line. */
+    --ctl:34px;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; display: flex; flex-direction: column; position: relative; isolation: isolate;
+    font: 400 15px/1.45 "Helvetica Neue", -apple-system, BlinkMacSystemFont, Inter, sans-serif;
+    background: var(--navy-900); color: var(--ink);
+    -webkit-font-smoothing: antialiased;
+  }
+  /* THE SIDE PANEL'S GROUND: --navy-900 plus the same combed stripe as sidepanel.html's body::after.
+     This window used to carry its own silk field — four radial glows in amber, pink, violet and
+     indigo at up to .34 — and across a window this wide they turned the whole header purple while
+     the panel beside it read as navy. The glow is left out; the ground and the stripe are shared. */
+  body::after {
+    content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none;
+    background: repeating-linear-gradient(64deg,
+      rgba(255,255,255,.028) 0 1px, rgba(255,255,255,0) 1px 7px);
+    mask-image: linear-gradient(180deg, #000 0, transparent 55%);
+    -webkit-mask-image: linear-gradient(180deg, #000 0, transparent 55%);
+  }
+
+  /* NO GLASS. The blur smeared the stripe beneath it into a flat haze — measured, the texture moved
+     no pixel under this header by more than 2 levels. Like the side panel's header, this one lets the
+     ground show through and draws only its bottom line. */
+  header {
+    flex-shrink: 0; padding: 15px 22px 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .title { display: flex; align-items: center; gap: 16px; }
+  .who { flex: 1; min-width: 0; }
+  h1 { margin: 0; font-size:21px; font-weight: 300; letter-spacing: -.022em; line-height: 1.15; }
+  h1 b { font-weight: 500; }
+  .src {
+    display: block; margin-top: 2px; color: var(--slate-dim); font-size:13.5px;
+    text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    max-width: 100%; font-family: var(--mono);
+  }
+  .src:hover { color: var(--slate); }
+  .src b { color: var(--slate); font-weight: 400; }
+
+  .toolbar { display: flex; gap: 8px; align-items: center; margin-top: 12px; }
+  input[type=search] {
+    flex: 1; min-width: 180px; height: var(--ctl); color: var(--ink); font: inherit;
+    background: rgba(255,255,255,.05); border: 1px solid var(--line);
+    border-radius: var(--r-2); padding: 0 11px;
+    transition: border-color .15s, box-shadow .15s, background .15s;
+  }
+  input[type=search]::placeholder { color: var(--slate-dim); }
+  input[type=search]:focus {
+    outline: none; background: rgba(255,255,255,.08);
+    border-color: rgba(255,182,72,.65); box-shadow: 0 0 0 3px rgba(255,182,72,.18);
+  }
+  button {
+    font: inherit; font-size:14.5px; border-radius: var(--r-2); cursor: pointer;
+    border: 1px solid var(--line); background: var(--glass); color: var(--ink);
+    padding: 7px 13px; backdrop-filter: blur(8px);
+    transition: background .15s, border-color .15s, transform .08s;
+  }
+  .toolbar button { height: var(--ctl); padding: 0 13px; }
+  button:hover:not(:disabled) { background: rgba(255,255,255,.11); border-color: rgba(255,255,255,.16); }
+  button:active:not(:disabled) { transform: translateY(1px); }
+  button:disabled { opacity: .35; cursor: default; }
+  /* A raised object, not a coloured rectangle — see sidepanel.html for why the
+     filled amber and filled white versions were both wrong. */
+  button.go {
+    flex: 0 0 auto; padding: 0 16px; height: var(--ctl); font-weight: 500;
+    color: var(--ink); border-color: rgba(255,255,255,.13);
+    background: linear-gradient(180deg, #17304a, #0e2136);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.10), 0 1px 1px rgba(0,0,0,.18),
+                0 4px 10px -4px rgba(0,0,0,.24), 0 14px 30px -10px rgba(255,182,72,.16),
+                0 28px 56px -20px rgba(255,182,72,.12);
+  }
+  button.go:hover:not(:disabled) {
+    background: linear-gradient(180deg, #1b3854, #12283f);
+    border-color: rgba(255,182,72,.42);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.13), 0 1px 1px rgba(0,0,0,.18),
+                0 6px 14px -5px rgba(0,0,0,.26), 0 18px 38px -12px rgba(255,182,72,.26),
+                0 34px 66px -22px rgba(255,182,72,.18);
+  }
+  :focus-visible { outline: 2px solid var(--signal-2); outline-offset: 2px; }
+
+  /* Export is three actions on a screen that already has a primary one. Ghosted
+     to text, so the count of things competing for attention stays at one. */
+  .minor { display: flex; gap: 2px; flex: 0 0 auto; }
+  .minor button {
+    background: none; border: 0; color: var(--slate-dim); padding: 6px 8px;
+    font-size:13.5px; backdrop-filter: none;
+  }
+  .minor button:hover:not(:disabled) { background: rgba(255,255,255,.07); color: var(--ink); }
+
+  /* Six format pills at equal weight was six decisions offered at once. One
+     control, and it only speaks up when it is doing something. */
+  .pick {
+    flex: 0 0 auto; display: inline-flex; align-items: center; height: var(--ctl);
+    font: inherit; font-size:13.5px; color: var(--slate);
+    background: rgba(255,255,255,.05); border: 1px solid var(--line);
+    border-radius: var(--r-2); padding: 0 11px; cursor: pointer; max-width: 190px;
+  }
+  /* Drawn, not typed. "⌄" is a glyph with its own baseline and it never sat on
+     the text's centre line at any size. */
+  .pick::after {
+    content: ""; width: 6px; height: 6px; margin: -3px 0 0 9px; flex: 0 0 auto; opacity: .55;
+    border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor;
+    transform: rotate(45deg);
+  }
+  .pick:hover { color: var(--ink); border-color: rgba(255,255,255,.18); }
+  .pick.on { color: var(--signal); border-color: rgba(255,182,72,.55); background: rgba(255,182,72,.16); }
+
+  /* A native <select> is the one control that cannot be brought into this
+     design — the browser draws its list, its arrow and its highlight. One
+     popover serves every menu here so they are all the same object. */
+  .pop {
+    position: fixed; z-index: 60; min-width: 168px; max-height: 300px; overflow: auto;
+    padding: 5px; border-radius: var(--r-3); border: 1px solid var(--line);
+    background: rgba(12,32,54,.94);
+    backdrop-filter: blur(22px) saturate(150%); -webkit-backdrop-filter: blur(22px) saturate(150%);
+    box-shadow: var(--shadow);
+  }
+  .pop[hidden] { display: none; }
+  .popi {
+    display: flex; align-items: baseline; gap: 10px; width: 100%; text-align: left;
+    padding: 7px 9px; border: 0; border-radius: 5px; background: none; cursor: pointer;
+    font: inherit; font-size:14px; color: var(--slate);
+  }
+  .popi span { flex: 1; }
+  .popi i { font-style: normal; font-family: var(--mono); font-size:12px; opacity: .6; }
+  .popi:hover, .popi.cursor { background: rgba(255,255,255,.09); color: var(--ink); }
+  .popi.on { color: var(--signal); }
+  .popi.on::before { content: "✓"; font-size:12px; margin-right: -4px; }
+  .popi:not(.on)::before { content: ""; width: 10px; margin-right: -4px; }
+
+  /* The per-row variant control. Quiet until the row is hovered, like the
+     other row-level affordances. */
+  .vpick {
+    display: inline-flex; align-items: center; vertical-align: -1px;
+    margin-left: 8px; font: inherit; font-family: var(--mono); font-size:12px;
+    padding: 2px 6px; border-radius: 4px; cursor: pointer;
+    background: rgba(255,255,255,.07); border: 1px solid var(--line); color: var(--slate);
+  }
+  .vpick:hover { color: var(--ink); border-color: rgba(255,182,72,.55); }
+  .vpick::after {
+    content: ""; width: 4px; height: 4px; margin: -2px 0 0 6px; flex: 0 0 auto; opacity: .55;
+    border-right: 1.2px solid currentColor; border-bottom: 1.2px solid currentColor;
+    transform: rotate(45deg);
+  }
+
+  /* SIGNATURE — a 4px ribbon under the toolbar whose three segments are sized to
+     the real bucket counts, in Stripe's own gradient stops. It looks like their
+     silk motif and it is simultaneously the reading of the page and the control
+     that filters it. Clicking a segment toggles that bucket. */
+  .band { display: flex; height: 4px; margin: 13px 0 0; border-radius: 3px; overflow: hidden;
+          background: rgba(255,255,255,.06); }
+  .band i { display: block; cursor: pointer; transition: opacity .2s, flex-grow .35s cubic-bezier(.2,.7,.3,1); }
+  .band i.assets { background: linear-gradient(90deg, var(--a4), var(--a1)); }
+  .band i.site   { background: linear-gradient(90deg, var(--a2), var(--a5)); }
+  .band i.ads    { background: linear-gradient(90deg, var(--a3), #ff9f5e); }
+  .band i.off { opacity: .26; }
+  .band i:hover { opacity: 1; filter: brightness(1.25); }
+
+  /* The reading. One sentence, one voice — the count is the only loud thing and
+     everything else in the line is a quiet toggle. Replaces two rows of pills
+     that gave a redundant "all 99 / image 99" the same weight as the primary
+     action. */
+  .chips { display: flex; gap: 4px; align-items: baseline; margin: 10px 0 13px; flex-wrap: wrap; }
+  .lead { font-size:15px; color: var(--slate); margin-right: 4px; }
+  .lead b { font-size:19px; font-weight: 300; letter-spacing: -.02em; color: var(--ink);
+            font-variant-numeric: tabular-nums; margin-right: 3px; }
+  /* Type tabs: one control with one value, so the marker slides between options
+     instead of the highlight jumping. Sized from the live button, since the
+     labels differ in width. */
+  .tabs { position: relative; display: flex; gap: 2px; }
+  .tabs .ind {
+    position: absolute; top: 0; bottom: 0; left: 0; width: 0; border-radius: 5px;
+    background: rgba(255,182,72,.16); pointer-events: none;
+    /* Ease-out-quint, not the overshoot this used to carry. A segmented marker that springs
+       past its target and settles back is describing an impact that did not happen — the
+       control has one value and the marker is simply where that value is. */
+    transition: transform .34s cubic-bezier(.22,1,.36,1), width .34s cubic-bezier(.22,1,.36,1);
+  }
+  .tog {
+    position: relative; font: inherit; font-size:13.5px; color: var(--slate-dim);
+    cursor: pointer; background: none; border: 0; border-radius: 5px; padding: 3px 8px;
+    transition: color .2s;
+  }
+  .tog:hover { color: var(--ink); }
+  .tog.on { color: var(--signal); }
+  .held .tog.on { background: rgba(255,182,72,.14); }
+  @media (prefers-reduced-motion: reduce) { .tabs .ind { transition: none; } }
+  /* Held-back buckets sit right, but at the same weight as the type toggles —
+     styling them as secondary once hid that most rows were behind them. */
+  .held { margin-left: auto; display: flex; gap: 4px; }
+
+  .fresh {
+    flex-shrink: 0; width: 100%; text-align: left; padding: 8px 22px; font-size:14px;
+    border: 0; border-bottom: 1px solid rgba(255,182,72,.35); border-radius: 0;
+    background: rgba(255,182,72,.18); color: var(--signal); backdrop-filter: blur(10px);
+  }
+  .fresh:hover { background: rgba(255,182,72,.28); }
+  .fresh[hidden] { display: none; }
+  /* --- view tabs -----------------------------------------------------------
+     Files and each list the page holds. Named after what the page calls them
+     where it says so, because "Table 2" tells you nothing about which to open. */
+  .vtabs { display: flex; gap: 2px; margin-top: 12px; flex-wrap: wrap; }
+  .vtab {
+    display: inline-flex; align-items: baseline; gap: 6px; padding: 6px 11px;
+    border: 1px solid transparent; border-radius: 8px; background: none;
+    color: var(--slate-dim); font: inherit; font-size:13px; cursor: pointer;
+    transition: background .15s, color .15s, border-color .15s;
+  }
+  .vtab:hover:not(.on) { background: rgba(255,255,255,.05); color: var(--ink); }
+  .vtab.on { background: var(--glass); border-color: var(--line); color: var(--ink); }
+  .vtab i { font-family: var(--mono); font-size:11px; font-style: normal; color: var(--slate-dim); }
+  .vtab.on i { color: var(--signal); }
+
+  /* --- the sheet ------------------------------------------------------------ */
+  .sheet { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+  .sheetbar {
+    display: flex; align-items: center; gap: 10px; padding: 9px 22px;
+    border-bottom: 1px solid var(--line-soft);
+  }
+  .ssum { font-size:13px; color: var(--slate); }
+  .ssum b { font-family: var(--mono); color: var(--ink); }
+  /* The way back from hiding. Present only while something is hidden, so the
+     control and the state it undoes appear and disappear together. */
+  .shid {
+    font-size:12px; color: var(--slate-dim); cursor: pointer;
+    padding: 3px 8px; border: 1px solid var(--line); border-radius: 7px;
+  }
+  .shid:hover { color: var(--ink); border-color: rgba(255,255,255,.2); }
+  .sheetbar .minor { margin-left: auto; }
+  /* Matches the file view's filter rather than inventing a second kind of input. */
+  #sq{
+    background:var(--fill);border:1px solid transparent;border-radius:var(--r-1);
+    color:var(--ink);font:inherit;font-size:12.5px;padding:4px 8px;width:150px;min-width:0;
+  }
+  #sq:focus{outline:none;border-color:var(--signal);background:var(--fill-2)}
+  #sq::placeholder{color:var(--ink-3)}
+  /* A toggle that is a button has to say which state it is in without being read:
+     on carries the signal colour, off goes quiet. */
+  #sInc[aria-pressed="true"]{color:var(--signal)}
+  #sInc[aria-pressed="false"]{color:var(--ink-3)}
+  /* An editable cell must look editable before it is clicked, or nobody clicks it. */
+  #sheetBody td[contenteditable]{cursor:text}
+  #sheetBody td[contenteditable]:hover{box-shadow:inset 0 0 0 1px rgba(255,255,255,.14)}
+  #sheetBody td[contenteditable]:focus{
+    outline:none;box-shadow:inset 0 0 0 2px var(--signal);background:var(--fill-2);
+    white-space:normal;overflow:visible;
+  }
+  #sheetBody td.edited{box-shadow:inset 2px 0 0 var(--signal)}
+  .pager{
+    display:flex;align-items:center;gap:8px;padding:8px 12px;flex:0 0 auto;
+    border-top:1px solid var(--line);font-size:12.5px;color:var(--ink-3);
+  }
+  .prange{margin-right:auto}
+  .pager button{
+    background:none;border:1px solid var(--line);border-radius:var(--r-1);color:var(--ink-2);
+    cursor:pointer;font:inherit;min-width:26px;height:26px;padding:0 6px;
+  }
+  .pager button:hover:not(:disabled){color:var(--ink);border-color:var(--ink-3)}
+  .pager button:disabled{opacity:.35;cursor:default}
+  .pnums{display:flex;gap:4px;align-items:center}
+  .pnums button.on{color:var(--signal);border-color:rgba(255,182,72,.55)}
+  /* The gap between non-adjacent page numbers. Borderless on purpose — it is a mark, not
+     a button, and giving it the button's box invites a click that does nothing. */
+  .pgap{color:var(--slate-dim);padding:0 2px;user-select:none}
+  .pshow{display:flex;align-items:center;gap:6px}
+  .pshow button{min-width:44px}
+  /* The same calm ground the Files table stands on. Without it this view sat on the page
+     background while the other had a floor, which is most of why they did not read as the
+     same window. */
+  .sheetwrap {
+    flex: 1; overflow: auto;
+    background: linear-gradient(180deg, rgba(6,23,38,.35) 0, rgba(6,23,38,.86) 220px);
+  }
+  #sheetTable { width: max-content; min-width: 100%; }
+  /* NO BLUR HERE EITHER, for the same reason as the page header above: a `position: sticky`
+     element re-samples whatever is now behind it on every scroll frame, and what is behind this
+     one is the busiest layer in the window — up to hundreds of contenteditable cells. Measured
+     with Chrome tracing over an 800-row sheet: removing the blur cut raster work during a scroll
+     from 837ms to 356ms and total scroll time by roughly 40%, which is what "laggy" was. The
+     opacity is raised to compensate — `.86` relied on the blur to finish hiding what scrolls
+     under it; solid on its own needs to do that job alone. */
+  #sheetHead th {
+    position: sticky; top: 0; z-index: 2; text-align: left; white-space: nowrap;
+    background: rgba(8,26,44,.97);
+    cursor: pointer; user-select: none;
+    /* Matched to the cells below it, so a column's label sits over its values rather than
+       a pixel or two off them. */
+    padding: 11px 14px; border-bottom: 1px solid var(--line);
+    color: var(--slate-dim); font-weight: 500; font-size:12.5px;
+    letter-spacing: 0; text-transform: none;
+  }
+  #sheetHead th:hover { color: var(--ink); background: rgba(255,255,255,.04); }
+  #sheetHead th .kind {
+    font-family: var(--mono); font-size:10px; margin-left: 6px; opacity: .65;
+  }
+  /* MIDDLE, and the row height is its own. This table used to inherit the Files table's
+     fixed `tbody tr { height: 64px }` — which is there for that table's windowing, not for
+     looks — and then top-align its cells inside it. So every row was a 64px band with its
+     text stuck to the top edge and thirty pixels of nothing underneath: not tight, but
+     unevenly spaced, which reads worse. Padding sets the rhythm here and the row is as tall
+     as its content, so a text row is compact and a row carrying a picture makes room for it. */
+  #sheetBody td {
+    padding: 10px 14px; border-bottom: 1px solid var(--line-soft);
+    font-size:13.5px; color: var(--ink); vertical-align: middle;
+    max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  /* Matched to the Files table rather than a third of it — one instrument, one hover. */
+  #sheetBody tr:hover td { background: rgba(255,255,255,.05); }
+  #sheetBody td.num { font-family: var(--mono); color: var(--slate); }
+  #sheetBody td a { color: var(--signal); text-decoration: none; }
+  #sheetBody td a:hover { text-decoration: underline; }
+  /* The same footprint and the same treatment the Files table gives a thumbnail, so the two
+     views read as one product instead of two. */
+  #sheetBody td img {
+    display: block; width: 62px; height: 44px; object-fit: cover;
+    border-radius: 5px; background: rgba(255,255,255,.06); border: 1px solid var(--line);
+    box-shadow: 0 1px 2px rgba(3,10,20,.22), 0 6px 14px -4px rgba(3,10,20,.30);
+  }
+  /* The same footprint as a thumbnail, with nothing in it. Rows stay a uniform height
+     whether or not a given one has a picture — without this the height followed that one
+     cell and a list where most rows have an image came out visibly ragged. Faint rather than
+     invisible, because "no picture here" is worth being able to see. */
+  #sheetBody td .noimg {
+    display: block; width: 62px; height: 44px; border-radius: 5px;
+    background: rgba(255,255,255,.022);
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.035);
+  }
+  /* AN EMPTY CELL SAYS SO, and it says it in CSS rather than in the cell.
+     A dash written into the markup would be real content: these cells are `contenteditable`,
+     so the first person to click one and type would commit "–" along with what they typed, and
+     every export would carry a dash where the source had nothing. `:empty` is the same mark
+     with none of that — it is not in the DOM, not in the CSV, not in the JSON, and it stops
+     matching the instant a character is typed, so the placeholder gets out of the way by
+     itself. Excludes the row number (never empty) and picture cells (their empty state is the
+     well above, which also holds the row's height).
+
+     Body cells only: the one empty cell in the HEAD is the corner above the row numbers, which
+     is empty because there is nothing to call it — a dash there marks a missing value that was
+     never missing. (Caught by looking at the screenshot; nothing would have failed.)
+
+     A HYPHEN, matching `CELL_EMPTY`. This was an en dash while every export wrote `-`, so the
+     screen and the file disagreed about the same empty cell by one character.
+
+     `.mt` is set by the renderer; `:empty` is kept alongside it for any cell drawn without one.
+     The class exists because these cells are contenteditable and Chrome puts a `<br>` inside an
+     empty one, which makes `:empty` stop matching — see the note in table.js.
+
+     ────────────────────────────────────────────────────────────────────────────────────────
+     AND THE REASON NONE OF THAT EVER REACHED THE SCREEN, through four rounds of "fixed":
+     the paragraph beginning "Body cells only" used to sit OUTSIDE this comment. A comment
+     terminator two paragraphs above closed it early, the prose ran loose in the stylesheet,
+     and a second terminator followed it. CSS has no line comments and no statement separator
+     to recover on, so the parser took that loose prose, the terminator, the two comments after
+     it and the selector below as ONE invalid selector, and dropped the rule it was attached to.
+     The CSSOM held `td.mt:focus::before` — the rule that HIDES the dash while editing — and
+     never held the rule that DRAWS it.
+
+     So the dash rule did not exist at runtime. That is why every fix that edited its content
+     changed nothing, and why reading the source always looked right: a broken comment is
+     invisible to review and silent at load — no console error, no failed selector, just a rule
+     that is quietly not there.
+
+     DO NOT WRITE THE TWO-CHARACTER COMMENT TERMINATOR INSIDE A COMMENT. The first version of
+     this very note quoted it three times to explain the bug and closed itself three times over,
+     reproducing the fault it describes. Say it in words. `test/paper.mjs` now checks comment
+     balance across the whole stylesheet AND that an empty cell computes a `-`, because neither
+     check alone would have caught both of these. */
+  /* NO EXTRA `opacity` ON TOP OF AN ALREADY DIM COLOUR. `--slate-dim` at .55 measured 2.0:1
+     against the row behind it — under every legibility floor there is, and a placeholder that
+     has to be hunted for is the complaint this rule exists to answer. The token alone is
+     3.8:1: unmistakably present, and still a third of the contrast of a real value, which is
+     the only job it has. */
+  #sheetBody td.mt::before,
+  #sheetBody td:empty::before {
+    content: '-'; color: var(--slate-dim);
+  }
+  #sheetBody td.mt:focus::before,
+  #sheetBody td:empty:focus::before { content: none; }
+  #sheetBody td.rn {
+    font-family: var(--mono); font-size:11px; color: var(--slate-dim);
+    text-align: right; padding-left: 14px; padding-right: 12px;
+    user-select: none; width: 1%; white-space: nowrap;
+  }
+
+  .wrap { flex: 1; overflow: auto; }
+  /* `display` on a class outranks the hidden attribute's UA rule, so hiding the
+     Files toolbar left it on screen above a table it cannot filter. Same bug the
+     side panel had; fixed the same way, and scoped so nothing that manages its
+     own visibility gets caught by it. */
+  .toolbar[hidden], .band[hidden], .chips[hidden], .vtabs[hidden],
+  .sheet[hidden], .wrap[hidden], .pager[hidden] { display: none !important; }
+  table { width: 100%; border-collapse: collapse; font-size:14.5px; }
+  /* NO BLUR — same fix, same measured reason, as `#sheetHead th`: this table is windowed
+     (`.wrap tbody tr { height: 64px }` below), which means it repaints rows constantly during
+     scroll, and a sticky header re-sampling that on every frame for a blur nobody asked for is
+     the most expensive thing on this screen. Solid at .97 instead of .86 + blur. */
+  thead th {
+    position: sticky; top: 0; z-index: 2; text-align: left; white-space: nowrap;
+    color: var(--slate-dim); font-weight: 500; font-size:12.5px;
+    letter-spacing: .06em; text-transform: uppercase;
+    padding: 9px 12px; cursor: pointer; user-select: none;
+    background: rgba(8,26,44,.97);
+    border-bottom: 1px solid var(--line);
+  }
+  thead th:hover { color: var(--slate); }
+  thead th.no { cursor: default; }
+  thead th span.ar { color: var(--signal-2); margin-left: 4px; }
+  tbody td { padding: 9px 12px; border-bottom: 1px solid var(--line-soft); vertical-align: middle; }
+  /* Fixed, because the table is windowed: only the rows on screen exist in the
+     DOM, and the scrollbar is held at the right length by two spacer rows whose
+     height is computed from this number. A row that could grow would drift the
+     scroll position as you moved. Every row holds the same four facts anyway.
+     SCOPED to `.wrap`, which is the windowed table. Unscoped, it also set the row height
+     of the sheet — a table that is paginated rather than windowed and needs nothing of the
+     sort — where it produced 64px bands holding one line of top-aligned text. */
+  .wrap tbody tr { height: 64px; }
+  tbody tr { transition: background .12s; }
+  tbody tr.pad { height: auto; transition: none; }
+  tbody tr.pad:hover { background: none; }
+  tbody tr.pad td { padding: 0; border: 0; }
+  tbody tr:hover { background: rgba(255,255,255,.05); }
+  tbody tr.sel { background: rgba(255,182,72,.07); box-shadow: inset 2px 0 0 var(--signal); }
+  /* The table needs a calm ground of its own; the ribbon lives above it. */
+  .wrap { background: linear-gradient(180deg, rgba(6,23,38,.35) 0, rgba(6,23,38,.86) 220px); }
+  tbody tr.broken { opacity: .42; }
+  input[type=checkbox] { accent-color: var(--signal); width: 14px; height: 14px; cursor: pointer; }
+
+  td.prev { width: 264px; }
+  td.prev img {
+    width: 62px; height: 44px; object-fit: cover; border-radius: 5px; display: block;
+    background: rgba(255,255,255,.06); border: 1px solid var(--line); cursor: zoom-in;
+    box-shadow: 0 1px 2px rgba(3,10,20,.22), 0 6px 14px -4px rgba(3,10,20,.30); transition: transform .14s, border-color .14s;
+  }
+  td.prev img:hover { transform: scale(1.06); border-color: rgba(255,182,72,.6); }
+
+  /* Video keeps the thumbnail's footprint so the column does not jump between row
+     kinds. Nothing is fetched to build a frame — the still is the one the page was
+     already showing beside that video, so the cell answers "which video is this?"
+     for free. Where a page offered none, the tile stays as it was. */
+  .vtile {
+    width: 62px; height: 44px; padding: 0; border-radius: 5px; display: grid; place-items: center;
+    background: rgba(255,255,255,.06); border: 1px solid var(--line); color: var(--slate);
+    cursor: pointer; box-shadow: 0 1px 2px rgba(3,10,20,.22), 0 6px 14px -4px rgba(3,10,20,.30);
+    transition: transform .14s, border-color .14s, color .14s;
+  }
+  .vtile:hover { transform: scale(1.06); border-color: rgba(255,182,72,.6); color: var(--ink); }
+  .vtile svg { display: block; width: 15px; height: 15px; fill: currentColor; }
+  .vtile.doc span {
+    font-family: var(--mono); font-size: 11px; letter-spacing: .06em; text-transform: uppercase;
+  }
+  .vtile.doc:hover { color: var(--signal); }
+
+  /* With a still behind it the play mark is an overlay, not the content: a small
+     disc so it stays legible over a bright frame without hiding it. */
+  .vtile.shot { position: relative; overflow: hidden; background: rgba(3,10,20,.5); }
+  .vtile.shot img {
+    position: absolute; inset: 0; width: 100%; height: 100%;
+    object-fit: cover; border: 0; border-radius: 0; box-shadow: none; transition: none;
+  }
+  .vtile.shot img:hover { transform: none; }
+  .vtile.shot svg {
+    position: relative; width: 13px; height: 13px; fill: #fff;
+    filter: drop-shadow(0 1px 3px rgba(0,0,0,.9));
+  }
+  .vtile.shot::after {
+    content: ''; position: absolute; width: 22px; height: 22px; border-radius: 50%;
+    background: rgba(3,10,20,.55); backdrop-filter: blur(2px);
+  }
+  .vtile.shot svg { z-index: 1; }
+  .vtile.shot:hover { border-color: rgba(255,182,72,.7); }
+
+  /* --- audio -------------------------------------------------------------- */
+  /* Native <audio controls> is a 200px slab of browser chrome that says nothing
+     about the sound. Peaks are decoded on first play only — decoding a list on
+     load is the documented way to spend 30 seconds and 100MB. */
+  .pl { display: flex; align-items: center; gap: 9px; }
+  .pbtn {
+    flex: 0 0 auto; width: 28px; height: 28px; padding: 0; border-radius: 50%;
+    display: grid; place-items: center; border: 1px solid var(--line);
+    background: rgba(255,255,255,.08); color: var(--ink); font-size:11px; line-height: 1;
+  }
+  .pbtn:hover:not(:disabled) { background: var(--signal); border-color: transparent; }
+  .pbtn.playing { background: var(--signal); border-color: transparent; }
+  .wave { display: block; width: 168px; height: 30px; cursor: pointer; border-radius: 3px; }
+  .ptime { font-family: var(--mono); font-size:12px; color: var(--slate-dim);
+           font-variant-numeric: tabular-nums; flex: 0 0 auto; min-width: 30px; }
+
+  /* --- name cell ---------------------------------------------------------- */
+  td.ttl { max-width: 0; }
+  .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fn { display: block; font-family: var(--mono); font-size:12.5px; color: var(--slate-dim);
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px; }
+
+  /* --- row actions -------------------------------------------------------- */
+  /* Hidden until the row is hovered or focused, so 90 rows do not each shout
+     three buttons — but always in the tab order, so they are not mouse-only. */
+  td.act { text-align: right; white-space: nowrap; }
+  .ract { display: inline-flex; gap: 1px; opacity: 0; transition: opacity .14s; }
+  tr:hover .ract, .ract:focus-within { opacity: 1; }
+  .ract button {
+    width: 26px; height: 26px; padding: 0; display: grid; place-items: center;
+    background: none; border: 0; color: var(--slate-dim); border-radius: 5px; font-size:14px;
+  }
+  .ract button:hover { background: rgba(255,255,255,.1); color: var(--ink); }
+
+  /* --- lightbox ----------------------------------------------------------- */
+  .lb { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center;
+        background: rgba(3,10,20,.86); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); }
+  .lb[hidden] { display: none; }
+  .lb-fig { max-width: 90vw; max-height: 84vh; display: flex; flex-direction: column; gap: 12px; align-items: center; }
+  .lb-fig img { max-width: 90vw; max-height: 72vh; object-fit: contain; border-radius: 8px;
+                box-shadow: 0 4px 10px -4px rgba(0,0,0,.35), 0 20px 44px -12px rgba(0,0,0,.45), 0 60px 110px -40px rgba(0,0,0,.55); background: rgba(255,255,255,.04); }
+  .lb-fig video { max-width: 90vw; max-height: 72vh; border-radius: 8px; background: #000;
+                  box-shadow: 0 4px 10px -4px rgba(0,0,0,.35), 0 20px 44px -12px rgba(0,0,0,.45), 0 60px 110px -40px rgba(0,0,0,.55); }
+  .lb-fig video[hidden], .lb-fig img[hidden] { display: none; }
+  /* Anchors the loading overlay to the video box. `line-height: 0` so the wrapper
+     is exactly the video's height and adds no stray strip under it. */
+  .lb-vwrap { position: relative; line-height: 0; }
+  .lb-vwrap[hidden] { display: none; }
+  /* Sits ON the video rather than under it: while this is up the frame below is a
+     black rectangle, and a caption elsewhere would leave that rectangle unexplained.
+     `pointer-events: none` keeps the controls underneath reachable throughout. */
+  .lb-load {
+    position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 10px; padding: 0 28px;
+    border-radius: 8px; background: rgba(3,10,20,.72);
+    backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+    pointer-events: none;
+  }
+  .lb-load[hidden] { display: none; }
+  .lb-load-bar {
+    width: min(72%, 320px); height: 4px; border-radius: 999px; overflow: hidden;
+    background: rgba(255,255,255,.14);
+  }
+  /* Driven by `transform`, never `width`: this repaints about eight times a second for
+     as long as a multi-hundred-megabyte download runs, and animating width would put a
+     layout pass in that loop. Scaled from the left edge; the rounding comes from the
+     track's own `overflow: hidden`, so there is no radius here to distort under scaleX. */
+  .lb-load-bar span {
+    display: block; height: 100%; width: 100%; background: var(--signal);
+    transform: scaleX(0); transform-origin: left center;
+    transition: transform .18s linear; will-change: transform;
+  }
+  /* No content-length and no measured size — nothing honest to put a percentage on, so a
+     sweep says "still working" without claiming to know the end. */
+  .lb-load-bar.indet span {
+    width: 34%; transition: none; animation: lbSweep 1.15s ease-in-out infinite;
+  }
+  @keyframes lbSweep {
+    0%   { transform: translateX(-100%); }   /* its own width, i.e. just off the left end */
+    100% { transform: translateX(294%); }    /* 100/34 — left edge at the track's right end */
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .lb-load-bar.indet span { animation: none; width: 100%; transform: scaleX(1); opacity: .45; }
+    .lb-load-bar span { transition: none; }
+  }
+  .lb-load-what {
+    margin: 0; font-size: 11px; letter-spacing: .14em; text-transform: uppercase;
+    color: var(--slate-dim);
+  }
+  /* The number someone actually wants while waiting. `tabular-nums` so it does not
+     jitter sideways as the digits change. */
+  .lb-load-pct {
+    margin: 0; font-family: var(--mono); font-size: 30px; line-height: 1;
+    font-variant-numeric: tabular-nums; color: var(--ink); letter-spacing: -.01em;
+  }
+  .lb-load-pct[hidden] { display: none; }
+  .lb-load-txt {
+    margin: 0; font-family: var(--mono); font-size: 13px; line-height: 1.5;
+    font-variant-numeric: tabular-nums; color: var(--slate); text-align: center;
+  }
+  /* A document wants page proportions, not a media box. */
+  #lbDoc {
+    width: min(86vw, 940px); height: 72vh; border: 0; border-radius: 8px; background: #fff;
+    box-shadow: 0 4px 10px -4px rgba(0,0,0,.35), 0 20px 44px -12px rgba(0,0,0,.45), 0 60px 110px -40px rgba(0,0,0,.55);
+  }
+  /* Text we can read locally — csv, subtitles, plain text. Rendered as text, not
+     dressed up as a spreadsheet: the file is what it is. */
+  #lbText {
+    width: min(86vw, 940px); max-height: 72vh; overflow: auto; margin: 0; padding: 18px 20px;
+    font-family: var(--mono); font-size: 13px; line-height: 1.65; color: var(--ink);
+    background: rgba(4,16,28,.86); border: 1px solid var(--line); border-radius: 8px;
+    white-space: pre; tab-size: 4;
+    box-shadow: 0 4px 10px -4px rgba(0,0,0,.35), 0 20px 44px -12px rgba(0,0,0,.45);
+  }
+  /* No preview, said plainly. Better than an empty frame or a spinner that never
+     resolves — and Download stays one click away in the bar below. */
+  .lb-cant {
+    width: min(70vw, 460px); padding: 34px 28px; text-align: center;
+    background: var(--glass); border: 1px solid var(--line); border-radius: var(--r-3);
+    backdrop-filter: blur(12px);
+  }
+  .lb-cant .ext {
+    display: inline-block; font-family: var(--mono); font-size: 22px; letter-spacing: .06em;
+    text-transform: uppercase; color: var(--signal);
+  }
+  .lb-cant p { margin: 12px 0 0; color: var(--slate); font-size: 14px; line-height: 1.6; }
+  #lbDoc[hidden], #lbText[hidden], .lb-cant[hidden] { display: none; }
+  /* A codec the browser will not play is a fact about the file, not a failure of
+     the preview. Say which, and leave Download reachable. */
+  .lb-note { margin: 0; font-size: 14px; color: var(--slate); background: rgba(255,182,72,.09);
+             border: 1px solid rgba(255,182,72,.28); border-radius: var(--r-2); padding: 10px 14px; }
+  .lb-note[hidden] { display: none; }
+  .lb-bar { display: flex; align-items: center; gap: 14px; font-size:14px; color: var(--slate);
+            background: var(--glass); border: 1px solid var(--line); border-radius: var(--r-2);
+            padding: 8px 12px; backdrop-filter: blur(12px); max-width: 88vw; }
+  .lb-bar .nm2 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 44vw; color: var(--ink); }
+  .lb-bar .dim { font-family: var(--mono); font-size:13px; color: var(--slate-dim); flex: 0 0 auto; }
+  .lb-x { position: fixed; top: 16px; right: 18px; width: 32px; height: 32px; border-radius: 50%;
+          display: grid; place-items: center; padding: 0;
+          background: var(--glass); border: 1px solid var(--line); color: var(--ink); }
+
+  /* --- column manager overlay --------------------------------------------- */
+  /* NO BLUR: measured with Chrome tracing (open this panel over an 800-row sheet, with and
+     without) and the blur itself was not the cost — but it sits directly on top of the sticky
+     header fixed above (see `#sheetHead th`), so dropping it here too removes any chance of the
+     two compounding, for free. `.94` opacity is already near-solid on its own. */
+  .cols-panel {
+    width: min(640px, 92vw); max-height: 78vh; display: flex; flex-direction: column;
+    background: rgba(12,32,54,.97); border: 1px solid var(--line); border-radius: var(--r-3);
+    box-shadow: var(--shadow);
+  }
+  .cols-head { display: flex; align-items: center; gap: 14px; padding: 15px 18px 12px; }
+  .cols-head h2 { margin: 0; flex: 1; font-size:16px; font-weight: 500; letter-spacing: -.01em; }
+  .cols-all { display: flex; align-items: center; gap: 7px; font-size:13px; color: var(--slate); cursor: pointer; }
+  /* Labels the three columns of every row below without repeating them on each one —
+     the checkbox needs none, so its cell is blank rather than "Show". */
+  .cols-colhead {
+    display: grid; grid-template-columns: 26px 180px 1fr; gap: 12px;
+    padding: 0 18px 7px; font-size:11.5px; letter-spacing: .04em; text-transform: uppercase;
+    color: var(--slate-dim); border-bottom: 1px solid var(--line);
+  }
+  .cols-list { overflow: auto; padding: 4px 18px 16px; }
+  .cols-row {
+    display: grid; grid-template-columns: 26px 180px 1fr; gap: 12px; align-items: center;
+    padding: 7px 0; border-bottom: 1px solid var(--line-soft);
+  }
+  .cols-row:last-child { border-bottom: 0; }
+  .colsName {
+    width: 100%; min-width: 0; font: inherit; font-size:13.5px; color: var(--ink);
+    background: rgba(255,255,255,.05); border: 1px solid var(--line); border-radius: var(--r-1);
+    padding: 5px 8px;
+  }
+  .colsName:focus {
+    outline: none; border-color: var(--signal); background: rgba(255,255,255,.08);
+  }
+  .cols-row .cv {
+    min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-family: var(--mono); font-size:12.5px; color: var(--slate);
+  }
+  .cols-none { color: var(--slate-dim); font-style: italic; }
+  .cols-row.suppressed { opacity: .5; }
+  .cols-row.suppressed .colsName { cursor: not-allowed; }
+  .cols-empty { padding: 30px 0; text-align: center; color: var(--slate-dim); font-size:13.5px; }
+  .lb-nav { position: fixed; top: 50%; transform: translateY(-50%); width: 40px; height: 40px;
+            border-radius: 50%; display: grid; place-items: center; padding: 0;
+            background: var(--glass); border: 1px solid var(--line); color: var(--ink); }
+  .lb-nav.prev { left: 18px; } .lb-nav.next { right: 18px; }
+  /* place-items centres the SVG box, and the paths are drawn symmetrically about
+     the viewBox centre, so the mark lands on the true middle. A glyph would not:
+     its side bearings and baseline sit inside the box being centred. */
+  .lb-nav svg, .lb-x svg {
+    display: block; width: 17px; height: 17px;
+    fill: none; stroke: currentColor; stroke-width: 1.7;
+    stroke-linecap: round; stroke-linejoin: round;
+  }
+  .lb-x svg { width: 15px; height: 15px; }
+  .k { font-size:12px; text-transform: uppercase; letter-spacing: .05em; color: var(--slate-dim); }
+  .sz { white-space: nowrap; font-variant-numeric: tabular-nums; font-family: var(--mono);
+        font-size:13px; color: var(--slate); text-transform: none; letter-spacing: 0; }
+  .by { opacity: .5; margin-left: 7px; font-size:12px; }
+  .wait { opacity: .28; }
+  .dead { font-style: italic; text-transform: none; letter-spacing: 0; }
+  .hid { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 3px;
+         background: rgba(255,207,94,.16); color: var(--a3); font-size:11px; letter-spacing: .05em; }
+  /* Not a warning about the tool — a fact about the URL. Quieter than .hid,
+     because it is the common case for anything a CDN serves without a name. */
+  .hid.soft { background: rgba(255,255,255,.07); color: var(--slate-dim); }
+  tr.notfile td.prev, tr.notfile td.ttl { opacity: .55; }
+  select.fmt {
+    margin-left: 7px; background: rgba(255,255,255,.07); color: var(--slate);
+    border: 1px solid var(--line); border-radius: 4px; font: inherit; font-size:12px;
+    padding: 2px 4px; cursor: pointer;
+  }
+  select.fmt:hover { color: var(--ink); border-color: rgba(255,182,72,.5); }
+
+  footer {
+    flex-shrink: 0; padding: 9px 22px; display: flex; justify-content: space-between; gap: 14px;
+    color: var(--slate-dim); font-size:13px; font-family: var(--mono);
+    border-top: 1px solid var(--line);
+    background: linear-gradient(180deg, rgba(6,23,38,.55), rgba(6,23,38,.8));
+    backdrop-filter: blur(18px);
+    -webkit-backdrop-filter: blur(18px);
+  }
+  .cov b { color: var(--slate); font-weight: 500; }
+  .empty { padding: 72px 20px; text-align: center; color: var(--slate-dim); font-weight: 300;
+           font-size:17px; letter-spacing: -.01em; }
+
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+</style>
+</head>
+<body>
+  <header>
+    <!-- Tier 1 — where you are, and the one action worth taking. The source URL
+         gets its own line: inline beside the wordmark it was a truncated
+         fragment competing with the brand for the same baseline. -->
+    <div class="title">
+      <div class="who">
+        <h1>Holo<b>Scrape</b></h1>
+        <a class="src" id="src" target="_blank" rel="noreferrer"></a>
+      </div>
+      <button class="go" id="dl">Download selected</button>
+    </div>
+
+    <!-- One tab per thing the page turned out to hold: its files, and each list
+         it contains. Hidden entirely when there is only one of them — a tab strip
+         with a single tab is a label pretending to be a control. -->
+    <nav class="vtabs" id="vtabs" hidden></nav>
+
+    <!-- Tier 2 — narrowing. Quiet by construction: one field, one menu, and
+         three text actions that should never compete with Download. -->
+    <div class="toolbar">
+      <input type="search" id="q" placeholder="Filter by title, filename or URL…" />
+      <button id="tags" class="pick" aria-haspopup="listbox" aria-expanded="false">Any format</button>
+      <span class="minor">
+        <button id="copy">Copy</button>
+      </span>
+      <!-- Four format buttons were four decisions offered at once, in a bar that already
+           had a primary Download. One control, the same `pick` as the format menu beside
+           it. Called Export rather than Download because "Download selected" is the green
+           button above and two controls answering to the same word is worse than a menu.
+           Copy stays out: it writes to the clipboard, not to a file. -->
+      <button id="exp" class="pick" aria-haspopup="menu" aria-expanded="false">Export</button>
+    </div>
+
+    <!-- Tier 3 — the reading. The band and the sentence say the same thing at
+         two speeds; the bucket names in it are the toggles. -->
+    <div class="band" id="band"></div>
+    <div class="chips" id="chips"></div>
+  </header>
+
+  <!-- The panel keeps scanning while this window is open, so its number can move
+       past this one. Announce it instead of re-rendering underneath the cursor —
+       rows must not shift while you are clicking them. -->
+  <button class="fresh" id="fresh" hidden></button>
+
+  <div class="wrap" id="wrap">
+    <table>
+      <thead>
+        <tr>
+          <!-- Reordered around how a row is actually read: see it, name it,
+               judge it, act on it. The full URL had its own wide column while
+               the filename — the thing you look for — was squeezed beside it.
+               The URL now lives on the title and in the row's copy action. -->
+          <th class="no" style="width:38px"><input type="checkbox" id="all" /></th>
+          <th class="no" style="width:264px">Preview</th>
+          <th data-s="title">Name</th>
+          <th data-s="type" style="width:78px">Type</th>
+          <th data-s="bytes" style="width:120px">Size</th>
+          <th class="no" style="width:104px"></th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <div class="empty" id="empty" style="display:none">Nothing to show.</div>
+  </div>
+
+  <!-- Same control as the sheet's own pager below — see `paintPager` in table.js,
+       which drives both from one function. Kept as a SIBLING of #wrap, not inside
+       it: #wrap is the scroll container paintWindow() measures, and a pager living
+       inside it would count toward that height and throw off the virtualized row
+       math. -->
+  <div class="pager" id="filesPager" hidden>
+    <span class="prange" id="filesPrange"></span>
+    <button id="filesPprev" aria-label="Previous page">&lsaquo;</button>
+    <span class="pnums" id="filesPnums"></span>
+    <button id="filesPnext" aria-label="Next page">&rsaquo;</button>
+    <span class="pshow">Show <button id="filesPsize" aria-haspopup="menu">50</button></span>
+  </div>
+
+  <!-- A table the page was already showing you, with its own actions beside it.
+       Two column operations, not six: renaming and hiding. Deleting a column is
+       hiding it without the way back, which is a worse version of the same
+       thing. -->
+  <section class="sheet" id="sheet" hidden>
+    <div class="sheetbar">
+      <span class="ssum" id="ssum"></span>
+      <span class="shid" id="shid" hidden></span>
+      <span class="minor">
+        <input type="search" id="sq" placeholder="Search rows…" aria-label="Search rows" />
+        <!-- STAYS OUTSIDE THE MENU, and it is the one control here that should. Every
+             other entry is an action that happens and is over; this is persistent state
+             that decides what those actions produce. Inside a menu its value would be
+             invisible at the exact moment it matters — while you are choosing an export. -->
+        <button id="sInc" hidden aria-pressed="true">Include images</button>
+      </span>
+      <!-- One screen for both column operations instead of one at a time through the
+           header menu below: every column's name, a value pulled from whichever row
+           actually has one, and the switch that shows or hides it. -->
+      <button id="sCols" class="pick" aria-haspopup="dialog">Column filter</button>
+      <!-- Five buttons became one. Outside `.minor` deliberately: `.minor button` strips
+           the border and background to ghost text, which would win over `.pick` on
+           specificity and leave this looking like the text actions it replaced. -->
+      <button id="sExp" class="pick" aria-haspopup="menu" aria-expanded="false">Export</button>
+    </div>
+    <div class="sheetwrap" id="sheetWrap">
+      <table id="sheetTable">
+        <thead id="sheetHead"></thead>
+        <tbody id="sheetBody"></tbody>
+      </table>
+    </div>
+    <!-- Pages, not one endless list. A 900-row table built every row up front, and
+         "rows 201-251 of 251" answers a question a scrollbar cannot: how much is
+         there, and where am I in it. -->
+    <div class="pager" id="pager" hidden>
+      <span class="prange" id="prange"></span>
+      <button id="pprev" aria-label="Previous page">&lsaquo;</button>
+      <span class="pnums" id="pnums"></span>
+      <button id="pnext" aria-label="Next page">&rsaquo;</button>
+      <!-- A button and the shared popover, not a <select>: the browser owns a
+           select's list, arrow and highlight, so one can never join this design. -->
+      <span class="pshow">Show <button id="psize" aria-haspopup="menu">50</button></span>
+    </div>
+  </section>
+
+  <footer>
+    <span id="stat"></span>
+    <span id="cov" class="cov"></span>
+    <span id="when"></span>
+  </footer>
+
+  <div class="pop" id="pop" hidden role="listbox"></div>
+
+  <!-- Preview at a size you can judge. Esc, arrows and a backdrop click all
+       leave, because a preview you cannot dismiss reflexively is a trap. -->
+  <div class="lb" id="lb" hidden role="dialog" aria-modal="true" aria-label="Preview">
+    <!-- Paths are symmetric about the viewBox centre (12,12), so these sit on the
+         true centre. Glyphs like ‹ › ✕ never do: the box that gets centred is the
+         line box, not the mark inside it. -->
+    <button class="lb-nav prev" id="lbPrev" aria-label="Previous">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>
+    </button>
+    <figure class="lb-fig">
+      <img id="lbImg" alt="" />
+      <!-- The same frame plays video. One element, kept paused and sourceless
+           while hidden, so closing the preview always stops the sound.
+           The wrapper exists only to anchor the loading overlay over the video
+           box; it carries no box of its own and is hidden with the video. -->
+      <div class="lb-vwrap" id="lbVwrap" hidden>
+        <video id="lbVid" controls playsinline preload="metadata" hidden></video>
+        <!-- A whole video file is fetched before it plays (see `playVideo`), and a
+             388MB one takes as long as it takes. Silence for thirty seconds reads
+             as broken, so say what is happening and how far along it is. -->
+        <div class="lb-load" id="lbLoad" hidden>
+          <!-- Says DOWNLOADING, not "loading". The whole file is fetched before a single
+               frame plays, so this bar is network transfer and nothing else — no decoding,
+               no rendering. "Loading" reads as the player working and leaves someone on a
+               slow line wondering why a video is stuck; the size pair below makes the wait
+               attributable to the file rather than to the tool. -->
+          <p class="lb-load-what">Downloading</p>
+          <p class="lb-load-pct" id="lbLoadPct">0%</p>
+          <div class="lb-load-bar"><span id="lbLoadFill"></span></div>
+          <p class="lb-load-txt" id="lbLoadTxt">Starting…</p>
+        </div>
+      </div>
+      <!-- Chrome renders PDFs itself; there is no library here and no third party
+           is sent the URL. -->
+      <iframe id="lbDoc" title="Document preview" hidden></iframe>
+      <pre id="lbText" hidden></pre>
+      <div class="lb-cant" id="lbCant" hidden>
+        <span class="ext" id="lbCantExt"></span>
+        <p id="lbCantWhy"></p>
+      </div>
+      <p class="lb-note" id="lbNote" hidden></p>
+      <div class="lb-bar">
+        <span class="nm2" id="lbName"></span>
+        <span class="dim" id="lbDim"></span>
+        <button id="lbGet">Download</button>
+        <button id="lbCopy">Copy URL</button>
+      </div>
+    </figure>
+    <button class="lb-nav next" id="lbNext" aria-label="Next image">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+    </button>
+    <button class="lb-x" id="lbX" aria-label="Close preview">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></svg>
+    </button>
+  </div>
+
+  <!-- Every column of the current table, in one screen: its name (editable in place,
+       the same edit `colMenu`'s prompt() makes, just not one column at a time), a
+       value pulled from whichever row actually has one, and the checkbox that shows
+       or hides it in the sheet. `#colsAll` flips every checkbox together — include
+       everything or start from nothing and pick the few that matter. Reuses the
+       lightbox's own backdrop and close button rather than inventing a second kind
+       of overlay. -->
+  <div class="lb" id="colsLb" hidden role="dialog" aria-modal="true" aria-label="Column filter">
+    <div class="cols-panel">
+      <div class="cols-head">
+        <h2>Column filter</h2>
+        <label class="cols-all"><input type="checkbox" id="colsAll" /> Include all</label>
+      </div>
+      <div class="cols-colhead">
+        <span></span><span>Name</span><span>Example value</span>
+      </div>
+      <div class="cols-list" id="colsList"></div>
+    </div>
+    <button class="lb-x" id="colsX" aria-label="Close">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></svg>
+    </button>
+  </div>
+
+  <!-- BEFORE table.js, and not a module. paper.js publishes `globalThis.Paper`, which
+       table.js reads when an Excel or PDF button is pressed; a `type="module"` here would
+       be deferred past table.js for no benefit, and an inline script is refused outright by
+       the extension CSP. It must also be listed in build.mjs's FILES or dist/ ships without
+       it and these two buttons throw on click. -->
+  <script src="paper.js"></script>
+  <script src="table.js"></script>
+</body>
+</html>

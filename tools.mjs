@@ -1,15 +1,38 @@
-// The tool surface: the schema helpers, every tool description, and the name -> browser-op map.
+// The tool surface: the schema helpers, every tool description, the name -> browser-op map, the
+// conditional reply hints, and the three things the server answers without asking the browser.
 //
 // SPLIT OUT OF index.mjs BECAUSE THIS IS THE PART THAT GROWS. The plumbing beside it — pairing,
-// RFC 6455 framing, the JSON-RPC loop — is finished and rarely touched; the descriptions are
-// edited every time a capability lands, and they are the ONLY documentation that travels. A user
-// who installs this package on another machine gets these strings and nothing else: no repo, no
-// design notes, no memory of the session that learned the thing. So they are written long on
-// purpose. Length here is not clutter, it is the whole manual.
+// RFC 6455 framing, the JSON-RPC loop — is finished and rarely touched; this file is edited every
+// time a capability lands.
+//
+// THE DESCRIPTIONS ARE SHORT ON PURPOSE, AND THEY USED TO BE LONG ON PURPOSE. The argument for long
+// was sound as far as it went: a stranger running `npx` gets these strings and nothing else, so the
+// strings were the whole manual. What it cost, measured over a real tools/list on 2026-09-22: 59,659
+// schema chars plus 27,561 of `instructions`, about 21,800 tokens, paid by every session before its
+// first call and whether or not a tool was ever used — against about 5,000 for Playwright MCP's 25
+// tools. Median description 2,954 chars against 42. And a warning in a description is read ONCE, at
+// session start, long before the moment it is true.
+//
+// So every lesson kept its words and changed its address. Three homes, the same three both reference
+// servers use (research/PLAYWRIGHT-DEVTOOLS-MCP-STUDY.md, section A):
+//   - HERE: what is needed to CHOOSE a tool. <= 400 chars a tool, <= 160 a parameter.
+//   - THE REPLY: anything conditional — `NEXT` below writes a `hint` only when the reply itself
+//     shows the condition holds (a hidden tab, a rising count, a column with five distinct values).
+//     Paid only when true, read at the moment it matters.
+//   - THE GUIDE: procedure and history. `INSTRUCTIONS` in guidance.mjs, served a section at a time
+//     by results action:"guide", whole as the MCP resource holoscrape://guide, and shipped as
+//     skill/SKILL.md. It travels in the same tarball, which is what answers the stranger-with-npx
+//     argument above.
+// research/GUIDANCE-RELOCATION.md is the ledger: every passage that left this file, and where it went.
+// test/mcp-surface-budget.mjs holds the budgets so the text cannot creep back.
 //
 // Keep both copies of this tree byte-identical (see the note at the top of index.mjs), and keep
 // `files` in package.json listing every module — a missing entry ships a package that throws on
 // import, and the first person to find out is a stranger running `npx`.
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { guide } from './guidance.mjs';
 
 const T = (name, description, props = {}, required = []) => ({
   name, description,
@@ -23,6 +46,12 @@ const B = (description) => ({ type: 'boolean', description });
 // in place of code, and `additionalProperties: false` keeps the join from growing a surface nobody
 // reviewed.
 const A = (description) => ({ type: 'array', items: { type: 'string' }, description });
+const M = (description) => ({ type: 'object', additionalProperties: { type: 'string' }, description });
+// ONE `where` FOR THE SIX TOOLS A SWITCH MAY MOVE (research/COMPANION-DESIGN.md). Defined once so
+// the six copies cannot drift, and kept under the 160-char parameter budget. `results` and the
+// status calls take no `where` on purpose: a runId or resultId already says which browser holds it.
+const WHERE = () => S('"person" (default) or "companion": a private headless Chromium, no login. Pick it when their '
+  + 'tabs must stay untouched or no tab is open; public pages only.', { enum: ['person', 'companion'] });
 const O = (description) => ({
   type: 'object',
   description,
@@ -45,610 +74,200 @@ const O = (description) => ({
 // rather than what it does, and names the tool that comes next.
 const TOOLS = [
   T('current_page',
-    'SCROLL BEFORE YOU STUDY. Everything this returns describes the page AS IT IS NOW, and most list pages mount ONE SCREENFUL and add the rest as you move down them: call page_grow until it reports grew:false, and only then read or study. Measured on shopee.com.br, a first read saw 14 product links and reported total:14 on a page that held 54 once grown — nothing about the first answer looked partial. A count taken before growing is a FLOOR, and every plan sized on it (tabs to open, pages to walk, whether to fan out) is scaled wrong. '
-    + 'The page the person is looking at right now, and what can be extracted from it. Takes no '
-    + 'arguments — use this for "I have a page open, scrape it". Returns a tabId to pass to '
-    + 'page_study or list_extract. Honours a page the person pinned in the HoloScrape panel; '
-    + 'otherwise it is the active tab of their last-used Chrome window. '
-    + 'IT MOVES WHEN THEY BROWSE. Unpinned, this is a live reading of wherever they are now, not a '
-    + 'handle on the page you started from — a run that keeps calling it can silently change '
-    + 'subject when the person opens something else. Capture the tabId ONCE and pass it explicitly '
-    + 'for the rest of the run. '
-    + 'If a tab that was working starts hanging on every call, the extension was probably reloaded '
-    + 'underneath it: tabs open from before hold a dead engine and never answer. Open a fresh one.'),
+    'The page the person is looking at now, and what can be extracted from it. Takes no arguments; '
+    + 'returns a tabId for the other tools. Honours a page pinned in the HoloScrape panel; otherwise '
+    + 'it follows the active tab and MOVES when they browse, so capture the tabId once and pass it '
+    + 'explicitly for the rest of the run.'),
 
   T('tabs_list',
-    'Every http(s) tab open in the person\'s browser. Use only when current_page is not the one '
-    + 'they meant and you need to ask which — for the ordinary case prefer current_page.'),
+    'Every http(s) tab open in the person\'s browser. Use only when current_page is not the page '
+    + 'they meant and you need to ask which.'),
 
   T('page_harvest',
-    'COST FIRST — THIS OPENS ONE PAGE PER RECORD, AND THAT IS MINUTES. Before calling it, ask what '
-    + 'the LIST PAGE already shows. If the fields you need — name, price, rating, seller, link — are '
-    + 'on the cards, list_extract or page_state "@dom(<row css>)" answers in SECONDS without opening '
-    + 'anything, and cannot trip a per-page rate limit. Measured on one marketplace search: 95 '
-    + 'products took 6m38s through here and would have been ~15s off the list. Use this only for '
-    + 'what is NOT on the list — a full description, sku, stock, variants, specs, reviews.\n'
-    + 'THEN THE SECOND QUESTION: how many pages. Cost is pages x per-page-load / lanes. Lanes divide '
-    + 'it up to about 5 and then stop helping — measured, 8 lanes is SLOWER and loses rows, and on a '
-    + 'site that checks for humans more lanes buys thin pages and challenges rather than speed. '
-    + 'Default 5; drop to 2-3 on anything that has already shown a captcha.\n'
-    + 'Follow a list into every one of its records and keep the rows HERE, in a result you export — '
-    + 'THE TOOL FOR "open each of these and get me X". The extension does the iterating: it opens '
-    + 'the pages in parallel lanes, extracts each one, accumulates the rows and hands back a '
-    + 'resultId. You make ONE call and never see a row.\n'
-    + 'USE IT INSTEAD OF LOOPING. Doing this by hand — tab_here, then page_state, then writing the '
-    + 'rows out, per item — was measured on 250 film pages at 52 minutes and 733 calls, and the '
-    + 'timing says the browser was 17% of that while ~80% was reading rows out of one call and '
-    + 'typing them into the next. The same work here is minutes, because the rows never move '
-    + 'through you.\n'
-    + 'WHAT COMES BACK IS A COUNT AND A resultId, deliberately — then results action:"get" for a look '
-    + 'at the first rows, or results action:"export" to write the whole table to a file. Asking for 12,000 rows in '
-    + 'a reply is the thing this exists to stop.\n'
-    + 'READ `fields` BEFORE YOU DOCUMENT A COLUMN. `filled` says a column has values; it does NOT '
-    + 'say they are values OF THE ROW, and a column that is populated and misidentified is worse '
-    + 'than an empty one because it reads as verified. `distinct` is the tell — 50 pages answering '
-    + 'with 5 different values is a property of something COARSER than the row (the shop, the page, '
-    + 'the site) wearing the name you gave it. Measured: a `rating` asked for per listing came back '
-    + 'filled 66 of 70 and was reported as each item\'s rating; it was the SELLER\'s, disprovable '
-    + 'from the same table where a row reading "4 out of 5 stars" carried three five-star reviews of '
-    + 'its own. Cross-check one row against its own contents before naming what a field means. '
-    + '`fieldsWhy` covers the opposite failure — filled but hollow, 1-2 characters per cell.\n'
-    + 'ONE PAGE MAY YIELD MANY ROWS. A film has a cast, a product has variants and reviews, a '
-    + 'question has answers. Give `rows` for those. Give `record` for the one-per-page fields '
-    + '(title, price, sku); they are copied onto every row from that page, so a cast row carries '
-    + 'its film. Give NEITHER and it reads schema.org (ld+json), which most commerce and most '
-    + 'editorial already publish — often the whole answer with no selectors at all.\n'
-    + 'A page that yields nothing is reported in failed[] with the reason, never as an empty '
-    + 'success, and a truncated row group sets capped. If a site asks to verify a human, every lane '
-    + 'stops and walled comes back true — relay that, do not retry.\n'
-    + 'IT READS EVERY PAGE TWICE BEFORE CALLING IT EMPTY — once at load and again after a '
-    + 'settle — because a storefront or any script-drawn page is complete before its fields '
-    + 'exist, and one read cannot tell that apart from a block. `late` says how many only '
-    + 'answered on the second look: high means client-rendered and slower, NOT blocked. So '
-    + 'refused is a claim you can pass on, and rows missing while `read` is high is your '
-    + 'SELECTOR — most often a hashed classname copied off the list page, which is '
-    + 'per-component and differs on the record page.\n'
-    + 'CLIENT-RENDERED SITE? NAME THE API INSTEAD OF THE MARKUP. Set `network` to a substring of \n'
-    + 'the request url the page fetches its data from ("gql.tokopedia.com", "/api/products") and \n'
-    + 'every matching JSON response is captured IN THE LANE. Then any field in `record` or \n'
-    + '`rows` may be a $. path into that JSON instead of a CSS selector: `$.data.product.title`, \n'
-    + 'or `$..description` to find a key at any depth. `rows.at` as a $. path makes a JSON array \n'
-    + 'the rows, and fields inside it are paths into each element. Mix freely — the title from \n'
-    + 'the DOM and the description from the response is the ordinary case. The payloads never \n'
-    + 'leave the browser; only rows come back. Find the right filter and paths with ONE \n'
-    + 'tab_here({network}) first, then harvest the set. Costs a debugging banner per lane, and \n'
-    + 'a lane whose tab has DevTools open runs DOM-only and says so. `netMissed` counts pages \n'
-    + 'where nothing matched — if it equals the page count, your filter is wrong, not the site.\n'
-    + 'ZERO SELECTORS IS A REAL OPTION AND THE FASTEST ONE. Proven on a live recipe page: no '
-    + '`record`, no `rows`, and it returned the full header (name, times, yield, rating) plus '
-    + '13 review rows from ld+json alone. If a page publishes schema.org, try the empty call '
-    + 'FIRST and read `columns` — reconnaissance you did not have to do is the whole margin.',
-    { tabId: N('The list page, if you are using `links`. Not needed when you pass `urls`.'),
-      urls: A('The pages to open. Either this or `links`.'),
-      links: S('OPTIONAL — omit it and the engine picks the ranked list itself (page_study\'s '
-        + 'chosen candidate) and follows its links, reporting the selector it used as linksVia. '
-        + 'Name one only when you mean a DIFFERENT list than the main one. Writing it by hand is '
-        + 'how a build-hashed class from another page of the same site ends up matching ten '
-        + 'elements on a page that holds 180. CSS selector for the LINKS on the list page — every matching href is followed, '
-        + 'de-duplicated. Prefer this over `urls`: typing 250 URLs into a call is ~12KB of exactly '
-        + 'the output this tool exists to remove.'),
-      record: { type: 'object', additionalProperties: { type: 'string' },
-        description: 'The one-per-page fields, as {name: "css"} — e.g. {"film":"h1","year":".year"}. '
-          + 'Use "css@attr" to read an attribute ("a@href" comes back absolute). Copied onto every '
-          + 'row from that page.' },
+    'Open every record linked from a list and extract fields from each, in parallel lanes inside the '
+    + 'browser. Returns counts and a resultId, never rows; read them with results get or export. Give '
+    + '`record` for one-per-page fields, `rows` for many-per-page, neither to read schema.org. Slow: '
+    + 'one page load per record. If the list cards already show the fields, use list_extract instead.',
+    { tabId: N('The list page, when using `links` or letting the engine pick. Not needed with `urls`.'),
+      urls: A('The pages to open. Either this or `links`. One url with `rows` re-reads that page\'s own rows.'),
+      links: S('CSS for the links to follow on the list page. Omit and the engine follows the ranked '
+        + 'list itself, reporting the selector it used as linksVia.'),
+      record: M('One-per-page fields as {name: "css"}; "css@attr" reads an attribute, "$.path" reads '
+        + 'captured JSON (needs `network`). Copied onto every row from that page.'),
       rows: { type: 'object',
-        description: 'The repeating block on each page. {at: "css for one row", fields: {name: "css '
-          + 'relative to that row"}, limit: n}. Each row is given `billing` (1-based position) '
-          + 'unless you name your own. '
-          + 'ALSO THE FAST PATH FOR A CUSTOM ATTRIBUTE ON A SINGLE PAGE\'S OWN ROWS: pass `urls: '
-          + '[<that one page\'s address>]` with no `links`, and an "css@attr" field here reads '
-          + 'that attribute off every repeating row in ONE call — cheaper than page_state\'s '
-          + '@html per index, which page_state can only do one element at a time. Only works when '
-          + 'loading that URL fresh reproduces the exact rows you saw; a live, session-paginated '
-          + 'list with no such URL (page 2+ of an inbox after "older") cannot be reopened this way '
-          + 'and needs page_state\'s per-index @html instead, called for several indices in '
-          + 'parallel rather than one at a time.',
+        description: 'The repeating block on each page: {at, fields, limit} or {from}. Each row also '
+          + 'gets `billing`, its 1-based position.',
         properties: {
-          at: { type: 'string', description: 'CSS for one repeating row on the record page.' },
-          fields: { type: 'object', additionalProperties: { type: 'string' },
-            description: 'Field name → CSS, relative to the row. "css@attr" reads an attribute. '
-              + 'USE ":self" TO TAKE THE ROW\'S OWN TEXT, whole and unparsed. That is the answer '
-              + 'when a site has moved its per-field hooks and your inner selectors come back empty: '
-              + 'measured on a marketplace whose review markup no longer carried the title and body '
-              + 'hooks, where two attempts returned those columns ABSENT while the row itself held '
-              + 'every word. One {"review": ":self"} beats guessing at hooks, and the text can be '
-              + 'split afterwards.' },
-          limit: { type: 'number', description: 'Rows per page, default 500. Over it, capped is set.' },
-          from: { type: 'string', description: 'WHICH schema.org array becomes the rows, by name — '
-            + '"recipeIngredient", "review", "offers", "actor", "itemListElement", "performer". Use '
-            + 'this INSTEAD of `at` when the page publishes ld+json: it costs no CSS and no look at '
-            + 'the markup. A page often carries several; without this the documented order decides '
-            + 'and the reply tells you what it passed over in `alsoRows`.' },
+          at: S('CSS for one repeating row on the record page, or a $. path to a JSON array (needs `network`).'),
+          fields: M('Field name -> CSS relative to the row. "css@attr" reads an attribute; ":self" '
+            + 'takes the row\'s own text whole, for when inner hooks come back empty.'),
+          limit: N('Rows per page, default 500. Over it, capped is set.'),
+          from: S('Instead of `at`: the schema.org array to use as rows, by name ("review", "offers", '
+            + '"recipeIngredient"). Others found are listed in alsoRows.'),
         },
         required: [] },
-      retryOf: S('A finished runId whose FAILED pages you want to re-run — and nothing else. A '
-        + 'thin page is usually transient rather than a bad page: measured over 625 products, one '
-        + 'pass read 529 and an identical second pass read 563, with only 10 failing BOTH times. '
-        + 'Without this the only way to recover ten failures was to re-run all 625 and merge the '
-        + 'passes by hand. Give the runId; the urls come off that run. Pair it with awaitFor if the '
-        + 'failures look like timing.'),
-      awaitFor: S('WAIT FOR THIS CONDITION ON EACH PAGE instead of a guessed settle. Same grammar '
-        + 'as the @await path: "<css> :: <mode> :: <ms>" — mode is exists (default), gone, still, '
-        + 'or a number meaning at least that many. THIS IS THE FIX FOR A HARVEST THAT READS SOME '
-        + 'PAGES AND NOT OTHERS: measured, four agents ran the same selector over the same 120 '
-        + 'products and two got every review while two got almost none. The pages were identical; '
-        + 'the timing was not. Name what you are waiting for and no page is read early, nor waited '
-        + 'on longer than it needs. "<spinner css> :: gone" is the surest signal where one exists, '
-        + 'because waiting for CONTENT cannot tell a slow page from an empty one.'),
-      lanes: N('Pages open at once. Default 5. More is not always faster and looks more like '
-        + 'scraping from the person\'s own address.'),
-      limit: N('Pages per run. Use it to pilot on 3 before committing to 250 — and NOTE it does '
-        + 'not trim a reply, it DROPS PAGES. When it cuts the queue the reply carries matched, '
-        + 'skipped and nextFrom; feed nextFrom back as `from` to take the next fold.'),
-      from: N('Skip this many of the matched links before starting — the resume point for a run '
-        + 'that was capped by `limit`. Take it from the previous reply\'s nextFrom. Same links, '
-        + 'next slice, so a long list can be done in folds instead of abandoned at the cap.'),
-      network: S('Substring of the request URL whose JSON responses should be captured for every '
-        + 'page, e.g. "gql.tokopedia.com". Fields may then be $. paths into that JSON. Without '
-        + 'this nothing is captured and no debugger is attached.'),
-      background: B('SET THIS FOR ANYTHING OVER ~20 PAGES. Returns a runId immediately instead of '
-        + 'blocking; results action:"status" then reports pagesDone, percent, rowsSoFar, failedSoFar and '
-        + 'an eta, and results action:"stop" ends it. Without it a 250-page harvest is minutes of total silence, during '
-        + 'which you cannot answer "how far along is it?" and neither you nor the person can tell a '
-        + 'working run from a hung one. Poll every 20-30s and relay the percentage.') },
+      retryOf: S('A finished runId: re-run only its FAILED pages. A thin page is usually transient. '
+        + 'Combine the passes with results action:"merge".'),
+      awaitFor: S('Wait for this on every page before reading: "<css> :: <mode> :: <ms>", mode exists '
+        + '| gone | still | a number. "<spinner css> :: gone" is the surest.'),
+      lanes: N('Pages open at once. Default 5; more is slower and loses rows. Use 2-3 on a site that '
+        + 'has shown a captcha.'),
+      limit: N('Pages per run, for a pilot. It DROPS pages rather than trimming a reply; the reply '
+        + 'then carries matched, skipped and nextFrom.'),
+      from: N('Skip this many matched links first. Pass the previous reply\'s nextFrom to take the next fold.'),
+      network: S('Substring of the request URL whose JSON to capture on every page, e.g. '
+        + '"/api/products". Fields may then be $. paths. Attaches a debugger per lane.'),
+      background: B('Return a runId at once instead of blocking; poll results action:"status". Set it '
+        + 'for anything over about 20 pages.'),
+      where: WHERE() },
     []),
 
   T('tab_here',
-    'Point a tab you already have at a different URL, and wait until it is actually loaded. THE '
-    + 'WAY TO VISIT MANY PAGES. newTab:true makes a NEW tab every time and nothing closes them, so N '
-    + 'destinations means N tabs the person clears by hand; page_grow mode:"walk" presses instead, which '
-    + 'works on an app that changes route without reloading and CANNOT work anywhere else — a real '
-    + 'page load destroys the frame the walk is running in, and the call dies reporting "Frame with '
-    + 'ID 0 was removed" even though the tab arrived. This runs outside the page, so a navigation '
-    + 'cannot kill it. One tab, many destinations, nothing left behind. '
-    + 'FOR ONE DESTINATION, OR A FEW THAT DIFFER FROM EACH OTHER. If you have a LIST and you want '
-    + 'the same thing off each page, that is page_harvest, not this in a loop — the extension '
-    + 'iterates, the rows never pass through you, and it is the difference between a handful of '
-    + 'calls and one per page. This tool REFUSES after a few navigate-then-read-rows cycles and '
-    + 'says so; pass oneByOne:true if the pages really are unrelated. '
-    + 'Returns arrived:false if the URL did not change. '
-    + 'THE DOCUMENT BEING READY IS NOT THE APP BEING READY, AND THIS REPLY TELLS YOU WHICH YOU HAVE. '
-    + 'On a site that paints from JavaScript — every marketplace — the load event fires on a header '
-    + 'and a spinner, and a read taken there succeeds while describing a page that does not exist '
-    + 'yet. So this also waits for a list to appear AND STOP GROWING, then reports: hasList, '
-    + 'rowsOnPage, and rising:true when the count was still climbing when the wait ran out. '
-    + 'READ THOSE BEFORE YOU PLAN ANYTHING. hasList:false on a page you believe is a list means you '
-    + 'are early, or the rows are FETCHED rather than rendered — pass `network` to read what the '
-    + 'page fetches, which is complete long before the DOM is. rising:true means rowsOnPage is a '
-    + 'FLOOR, not a total: sizing a fan-out off it is how a run reports 27 of 240. Measured on '
-    + 'shopee.com.br, where an early read saw 13-20 of 60 products and one saw only the footer.',
-    { tabId: N('The tab to move. It keeps its id — this is the same tab, somewhere else.'),
-      url: S('http or https. Subject to the same per-origin consent as everything else.'),
-      close: B('CLOSE this tab instead of navigating it. The opposite of newTab, and the thing to '
-        + 'do when a pass ends: lanes become tabs in the person\'s own window, and one run left 23 '
-        + 'of them behind because nothing could tidy up. Refused for the connection window (the '
-        + 'socket every session talks through) and for a tab the person has PINNED.'),
-      newTab: B('Open a NEW tab instead of moving this one. Leaves a tab behind for the person '
-        + 'to close, so use it only when they asked for a new tab, or when there is no tab to move.'),
-      search: S('Search a site instead of naming a URL: the words to search for. With this, `url` '
-        + 'is the SITE (a hostname or its search page) and the search is run there — the same '
-        + 'thing a person does by typing into the site\'s own box, which beats guessing a query '
-        + 'string. Reports what the site actually returned.'),
-            oneByOne: B('Only when a sweep is genuinely not a sweep. After a handful of navigate-then-read-rows '
-        + 'cycles this tool REFUSES and points you at page_harvest, which does the rest in one call. '
-        + 'Set this when the pages differ from one another and must be visited in turn — a login, a '
-        + 'form, a set of one-off lookups.'),
-      network: S('START WITH "*" ON ANY SITE YOU DO NOT ALREADY KNOW. That is DISCOVERY: it maps '
-        + 'every response the page fetched on load — url, mime, size, and for JSON the list of '
-        + 'paths inside it with types, array lengths and a sample of each string — and returns NO '
-        + 'bodies. From that map you get both things page_harvest needs: which url substring to '
-        + 'filter on, and the exact $. paths to name as fields. Without it you would be guessing '
-        + 'the API host and the payload shape, which is why capture alone is not enough. '
-        + 'Substring to match against request URLs during navigation — when set, the debugger '
-        + 'is attached for the duration of the page load and EVERY matching response is '
-        + 'returned in a `network` array alongside the normal arrived/url fields. Use this when the '
-        + 'data you want lives in an API response the page fetches on load (GraphQL, REST) and is '
-        + 'not yet in the DOM. Example: "gql.tokopedia.com" captures the product-detail GQL reply '
-        + 'before React renders it — navigate + read in one call instead of two. Attaches and '
-        + 'detaches the debugger automatically; shows a brief yellow bar on the tab.') },
+    'Point a tab you already hold at a URL and wait until the page has actually loaded: one tab, many '
+    + 'destinations, nothing left behind. Reports arrived, hasList, rowsOnPage and rising (the count '
+    + 'was still climbing, so it is a floor). `network` also captures what the page fetched. For the '
+    + 'same fields off many pages use page_harvest, not this in a loop; it refuses after a few cycles.',
+    { tabId: N('The tab to move. It keeps its id: the same tab, somewhere else.'),
+      url: S('http or https.'),
+      close: B('Close this tab instead of navigating it; do it when a pass ends. Refused for the '
+        + 'connection window and for a tab the person pinned.'),
+      newTab: B('Open a NEW tab instead of moving this one. Nothing closes it, so use it only when '
+        + 'they asked for a new tab or there is no tab to move.'),
+      search: S('Words to search for. With this, `url` names the SITE and the search runs in the '
+        + 'site\'s own box; reports what the site returned.'),
+      oneByOne: B('Stand the sweep refusal aside: set it only when the pages differ from one another '
+        + 'and must be visited in turn (a login, a form, one-off lookups).'),
+      network: S('Substring of request URLs to capture during the load. "*" maps every response '
+        + '(url, mime, size, JSON paths) with no bodies: start there on an unknown site.'),
+      where: WHERE() },
     ['url']),
 
   T('page_study',
-    'SCROLL BEFORE YOU STUDY. Everything this returns describes the page AS IT IS NOW, and most list pages mount ONE SCREENFUL and add the rest as you move down them: call page_grow until it reports grew:false, and only then read or study. Measured on shopee.com.br, a first read saw 14 product links and reported total:14 on a page that held 54 once grown — nothing about the first answer looked partial. A count taken before growing is a FLOOR, and every plan sized on it (tabs to open, pages to walk, whether to fan out) is scaled wrong. '
-    + 'AN EMPTY growth.candidates MEANS "NOT THERE YET", NOT "NEVER". A lazy list often renders its '
-    + 'load-more only AFTER the first batch fills, so a study run at first paint truthfully finds '
-    + 'nothing. Measured on a live storefront: 13 buttons on the page and no load-more at 10 rows; '
-    + 'the same control appeared once the list was deep. Grow the list, then study again — do not '
-    + 'conclude from one empty read that the list cannot grow. (The matcher itself is wide: it '
-    + 'reads "Muat Lebih Banyak" and its equivalents in a dozen languages.)\n'
-    + 'Every repeating structure on a tab, RANKED, with the evidence behind the ranking — plus how the '
-    + 'page continues (next link, rel=next, numbered pager) and what might load more. Use this when '
-    + 'page_study gave a list you do not trust, or before writing a scrape you want to be right: it '
-    + 'returns several candidates rather than one verdict, so YOU choose. Read two fields before '
-    + 'trusting the one it marks chosen: looksLikeFurniture (the candidate sits inside a footer, nav '
-    + 'or aside landmark — measured on real sites where the engine picked a footer site-directory and '
-    + 'a filter sidebar over the actual results) and distinctness (rows that all point at the same '
-    + 'place are one record repeated, which is how a filter panel outscores a product grid). '
-    + 'IF THE ONLY CANDIDATE IS FURNITURE, THE PAGE HAS NOT RENDERED — that is not a page without a '
-    + 'list, it is a page read too early, and the hint now says so. Re-read in a moment, or read '
-    + 'what the page FETCHES (tab_here with network) instead of what it shows. Measured on '
-    + 'shopee.com.br: one candidate, the footer, 5 rows, 8 links on a page holding 60 products. '
-    + 'Growth '
-    + 'affordances come back verified:false — press one with page_grow to find out. They come from '
-    + 'TWO sweeps and carry which one found them: position (a clickable sitting just under the '
-    + 'list) and via:"findLoadMore", the hardened sweep that reads direct text and accepts a '
-    + 'div or span behind a cursor:pointer check — because the load-more is often not a button, '
-    + 'and is often not near the list either. An EMPTY candidates list now means both sweeps '
-    + 'found nothing, not that nobody looked. '
-    + 'IF WHAT YOU WANT IS NOT ONE OF THESE LISTS, STOP LOOKING FOR A LIST. This tool only sees '
-    + 'repeating structure, and much of what people ask for is not repeating structure on THIS '
-    + 'page: a name in a header is page_state "@dom(...)"; the markup itself, when a '
-    + 'tool refuses something you can plainly see, is page_state "@html(...)"; and a value on each of '
-    + 'many pages rather than in a list on this one is page_harvest. Measured: an agent spent a whole '
-    + 'session trying to extract 23 server names from a rail that carries none, while pressing '
-    + 'each server put its name in the title bar. Re-frame after the FIRST refusal, not the fifth.',
-    { tabId: N('From current_page, tab_here or tabs_list.') },
+    'Every repeating structure on a tab, ranked, with the evidence behind the ranking, plus how the '
+    + 'page continues (next link, numbered pager) and what might load more. Returns several '
+    + 'candidates so you choose: check looksLikeFurniture and distinctness before trusting the one '
+    + 'marked chosen. It sees only repeating structure: read a single element with page_state '
+    + '"@dom(<css>)". Read-only.',
+    { tabId: N('From current_page, tab_here or tabs_list.'),
+      where: WHERE() },
     ['tabId']),
 
   T('page_grow',
-    'A BACKGROUND TAB LOADS NOTHING. Chrome stops animation frames in a tab nobody is looking at, '
-    + 'and a lazy list rides them — so grew:false on a background tab is not an answer about the '
-    + 'site. Measured: scrollTop moved 572 -> 3136 across twelve hops with fresh:0 every time, and '
-    + 'the same page loaded fine when the tab was focused.\n'
-    + 'FEED MODE — pass `network` and `rows.at` and this stops reading the DOM at all: it scrolls one '
-    + 'step, reads the request THAT SCROLL CAUSED, takes the items straight out of the JSON, and '
-    + 'repeats until the site stops returning new ones. Use it for an infinite list, a VIRTUALIZED '
-    + 'list (the DOM only ever holds a screenful, so a DOM read loses rows as they unmount), or any '
-    + 'feed where a reply-size budget caps what one read can return. The site paginates itself — no '
-    + 'cursor or offset to work out — and "no new items" is the list ENDING, said by the site '
-    + 'itself. Rows accumulate in the browser. NOTE the first screenful is usually already in the '
-    + 'document and NOT in the capture, so read that from the page and treat this as what follows.\n'
-    + 'Press a load-more control, or scroll — the window, or ONE scrollable container — and report '
-    + 'how the list changed. This is the only honest way to answer does-this-load-more: a button '
-    + 'saying More may do nothing, and a page with no button at all may grow on scroll. The '
-    + 'selector takes two kinds of target, told apart by what it points at: a control from '
-    + 'page_study growth.candidates gets PRESSED; a scrollable container — one of page_study '
-    + 'lists[].selector, or any CSS selector of the pane — passed with scroll:true gets scrolled '
-    + 'to ITS OWN bottom instead of the window\'s. Use the container form whenever the page has '
-    + 'more than one scrollable region (a sidebar list beside an open conversation, a rail beside '
-    + 'results), because scrolling the window there moves the pane you did NOT mean. A '
-    + 'container-targeted grow reports containerRows before/after beside the page-wide '
-    + 'recordLinks count: rows that carry no links — a chat list is divs all the way down — read '
-    + 'as 0 record links forever, so containerRows is the growth signal to trust there, and a '
-    + 'scrolled {from,to,max} triple says whether the pane even moved. CHANGES THE PAGE, unlike '
-    + 'page_study. IT REPORTS WHETHER THE LIST IS REPEATING ITSELF: `duplicates` gives domRows, '
-    + 'unique (counted by the same row identity the export uses), duplicates, loopingPct and '
-    + 'uniqueGained. A feed can grow forever without ever adding a row you do not already hold '
-    + '— measured, one marketplace re-serves the same ~284 products until the DOM holds 2,000 — '
-    + 'so uniqueGained, not domRows, is what the table will contain. Hops stop for two DIFFERENT '
-    + 'reasons and stoppedEarly says which: nothing arriving at all, or rows arriving that are '
-    + 'all rows the list already had. '
-    + 'grew:false with by:0 is a real answer, not a failure — and a selector that '
-    + 'matches nothing fails naming the selector rather than silently scrolling the window.',
+    'Make a list load more and report what changed: presses a load-more control, or scrolls the '
+    + 'window or one container (`selector` + scroll:true). Returns rows before and after, unique '
+    + 'rows gained, and whether the list repeats itself. With `network` and `rows.at` it reads the '
+    + 'JSON each scroll fetched (infinite or virtual lists). mode walk or explore presses '
+    + 'instead. Changes the page.',
     { tabId: N('The tab.'),
-      mode: S('What kind of press. "grow" (default) makes a LIST longer and reports whether it '
-        + 'actually grew. "walk" presses one thing and reports what CHANGED — for an app that '
-        + 'swaps content without loading a document; it cannot follow an ordinary link, because a '
-        + 'real navigation destroys the frame it runs in (use tab_here for that). "explore" opens '
-        + 'what is collapsed and reports what appeared.',
+      mode: S('"grow" (default) lengthens a list. "walk" presses, fills or chooses; it cannot follow '
+        + 'a real link (use tab_here). "explore" opens what is collapsed.',
         { enum: ['grow', 'walk', 'explore'] }),
-      text: S('walk mode: what the person would CLICK, in their words. Prefer this over a '
-        + 'selector — it survives a redesign that renames every class.'),
-      fill: S('TYPE THIS TEXT into the field named by `selector` — the third verb beside pressing '
-        + 'and choosing, and the one that was missing. A list reachable only through a filter, a '
-        + 'date range or a search box the site does not expose as a URL could not be reached at '
-        + 'all without it. REFUSED for a password field (that is the person\'s identity, not page '
-        + 'data — if a sign-in is in the way, say so and let THEM do it), for a hidden input (the '
-        + 'page\'s own token or state blob), and for anything that looks like payment, including '
-        + 'any field the page itself marks autocomplete="cc-*". It does NOT submit: filling and '
-        + 'sending are separate decisions, so press the form\'s control afterwards with '
-        + 'mode:"walk". The value is read BACK and returned, because a masked or length-capped '
-        + 'field can hold something other than what you sent.'),
-      choose: S('walk mode: CHOOSE AN OPTION IN A <select>, by the option\'s visible words — '
-        + '"Most Recent", "Highest rated", "100 per page". A <select> does not answer a click, so '
-        + 'this is the only way to reach content that exists only behind a chosen option: sort '
-        + 'orders, filter selects, per-page counts, date ranges, locale and currency. THE DEFAULT '
-        + 'ORDER OF A REVIEW OR RESULT LIST IS ALMOST NEVER DATE ORDER — it is relevance or '
-        + '"most helpful" — so "the 3 latest" read off the page as it loads is usually wrong; choose '
-        + 'the date option first. Finds the select BY the option, so no selector is needed unless the '
-        + 'page carries several with overlapping names. Reads `changed`: false means the option was '
-        + 'set and the page looked identical afterwards, which is either a slow re-render (raise '
-        + 'waitMs) or a widget that ignores the event — do not report the rows as re-sorted until it '
-        + 'is true. Pass `read` with the row selector and the reply carries the rows themselves, '
-        + 'which is how you verify the order actually changed. Unlike a press this does NOT return '
-        + 'to where it started: the point of choosing is that the next read sees the new order.'),
-      back: B('walk mode: return to the page this walk started from when it is done.'),
-            selector: S('A control from page_study growth.candidates to press, OR any CSS selector of '
-        + 'a scrollable container to scroll (pass scroll:true with it). Omit to scroll the window.'),
-      scroll: B('Scroll instead of pressing. Alone: the window, to the page bottom. With a '
-        + 'selector: THAT container, to its own bottom — the right mode for a pane beside other panes.'),
+      text: S('walk: what the person would CLICK, in their words. Prefer it to a selector; it '
+        + 'survives a redesign that renames every class.'),
+      fill: S('walk: type this into the field named by `selector`. Never submits; the value is read '
+        + 'back. Refused for password, hidden and payment fields.'),
+      choose: S('walk: pick a <select> option by its visible words ("Most recent"). Finds the select '
+        + 'by the option. changed:false means the page looked identical afterwards.'),
+      read: S('walk: CSS of the rows to read back after the press or choice, so the reply carries '
+        + 'them and you can verify the order really changed.'),
+      limit: N('walk: how many matched controls to press in this call.'),
+      offset: N('walk: start from this matched control. A walk that stopped early says where; pass '
+        + 'that back to continue rather than start over.'),
+      back: B('walk: return to the page this walk started from when it is done.'),
+      oneByOne: B('walk: stand the sweep refusal aside, for pages that genuinely must be pressed '
+        + 'through one at a time.'),
+      selector: S('A control from page_study growth.candidates to press, OR the CSS of a scrollable '
+        + 'container to scroll (with scroll:true). Omit to scroll the window.'),
+      scroll: B('Scroll instead of pressing. Alone: the window. With `selector`: THAT container, to '
+        + 'its own bottom, which is right for a pane beside other panes.'),
       waitMs: N('How long to wait for new rows. Default 2500, max 8000.'),
-      direction: S('Which way to scroll a container: "down" (default) for more of a list, or "up" for OLDER content. A conversation loads its history upward — the newest message is already at the bottom, so scrolling down there reports grew:false truthfully and uselessly.'),
-      hops: N('How many times to scroll and wait, for content fetched a page at a time. Default 1, max 50. Ten hops up a channel is ten pages of history. Stops early when two hops in a row bring nothing, and reports perHop so you can see what each one added.'),
-      network: S('Substring of the request URL the scroll triggers, e.g. "/api/search". Turns on '
-        + 'FEED MODE: items come from the response, not the DOM. Needs rows.at. Find it with '
-        + 'tab_here({network:"*"}) on this page.'),
+      direction: S('"down" (default) for more of a list, "up" for OLDER content: a conversation loads '
+        + 'its history upward.'),
+      hops: N('How many times to scroll and wait. Default 1, max 50. Stops early after two empty '
+        + 'hops; perHop shows what each one added.'),
+      rounds: N('explore: scroll rounds per region, default 8, max 40.'),
+      network: S('Feed mode: substring of the request URL each scroll triggers, e.g. "/api/search". '
+        + 'Needs rows.at. Find it with tab_here network:"*".'),
       rows: { type: 'object',
-        description: 'Feed mode only. {at: "$..items", fields: {name: "$.title"}} — `at` is a $. '
-          + 'path to the ARRAY of items in the response; fields are paths inside ONE item.',
+        description: 'Feed mode only: {at: "$..items", fields: {name: "$.title"}}.',
         properties: { at: S('$. path to the array of items in the captured response.'),
-          fields: { type: 'object', additionalProperties: { type: 'string' },
-            description: 'Field name -> $. path, relative to one item.' } } } },
+          fields: M('Field name -> $. path, relative to one item.') } },
+      where: WHERE() },
     ['tabId']),
 
   T('page_state',
-    'SCROLL BEFORE YOU STUDY. Everything this returns describes the page AS IT IS NOW, and most list pages mount ONE SCREENFUL and add the rest as you move down them: call page_grow until it reports grew:false, and only then read or study. Measured on shopee.com.br, a first read saw 14 product links and reported total:14 on a page that held 54 once grown — nothing about the first answer looked partial. A count taken before growing is a FLOOR, and every plan sized on it (tabs to open, pages to walk, whether to fan out) is scaled wrong. '
-    + 'WATCH THE NETWORK: path "@net(<url substring>)" starts a watch on this tab that OUTLIVES the '
-    + 'call, "@net(*)" watches EVERY response — images, fonts, stylesheets and documents as well as '
-    + 'the data calls — "@net()" polls what has arrived SINCE THE LAST POLL, and "@net(stop)" ends '
-    + 'it. A url substring is not a category filter either: ask for "cdn.example.com" and you get '
-    + 'every response from it, pictures included. Use it when the data appears because of something '
-    + 'you are about to do — a filter click, a drawer, a search box, a scroll — rather than on page '
-    + 'load: start the watch FIRST, then do the thing with any tool, then poll. A watch cannot '
-    + 'recover requests the page already made, so starting one after the fact returns nothing.\n'
-    + 'WHAT A POLL RETURNS, and why it is three fields rather than one: `responses` are the ones '
-    + 'whose body was read and shaped into $. paths — hand those to page_harvest({network}) or '
-    + 'page_grow({network, rows}). `network` NAMES every response with url, mime, status, kind and '
-    + 'bytes, so a page that fetched 290 things is not reported as the 12 that happened to be JSON. '
-    + '`kinds` counts them by resource type, which is the same grouping the browser\'s own network '
-    + 'panel puts on its filter buttons. Bodies are read only for the data-shaped ones because a '
-    + 'decoded image is bytes you cannot use — to read a specific one, name its url with '
-    + '"@net(<substring>)". Holds a debugger on the tab (yellow bar, and DevTools cannot be open on '
-    + 'it) until stopped, so stop when done.\n'
-    + 'Read the app\'s OWN in-memory state — the store it renders the page FROM — instead of the '
-    + 'rendered page. DISCOVERY COMES FIRST, THEN A PATH: call with tabId alone and you get a map '
-    + 'of what state this app has (bootstrap globals like __INITIAL_STATE__ or __NEXT_DATA__, '
-    + 'store-shaped globals, React/Vue roots, the webpack module registry), each with a short '
-    + 'shape summary and the exact path prefix to read it with; call again with path set to one of '
-    + 'those to read that slice. There is no way to pass code — only a data path '
-    + '("chats[0].id", "@mod[\\"WAWebContactCollection\\"].ContactCollection"), which is walked as '
-    + 'properties and never evaluated. ONE PSEUDO-SOURCE READS THE RENDERED PAGE INSTEAD OF THE '
-    + 'STORE: path "@dom(<css selector>)" returns the elements that selector matches, each with '
-    + 'its text, label (aria-label or title — often the ONLY name an icon has), href and img. No '
-    + 'ranking, no list detection, no re-detection — the three things that can each lose rows '
-    + 'between what is on screen and what comes back. Use it whenever a list_extract run returns '
-    + 'fewer rows than you can see, or to read a header, a title or any single element. '
-    + 'Best for: virtualized and recycler lists, where the DOM '
-    + 'holds the mounted window and can never hold the list — and for any record whose fields the '
-    + 'DOM simply omits. The measured example is a chat list: a pinned list_extract returned 67 '
-    + 'rows of a much longer list, and a phone number for UNSAVED contacts only, because the '
-    + 'markup carries no number for a contact the app has a name for. Its store carries both. Not '
-    + 'recommended for: anything the DOM already shows — list_extract is cheaper, follows pages by '
-    + 'itself and hands back a saved table you can export, and page_study will tell you whether '
-    + 'the DOM has the field at all. Reach for this when a run came back SHORT, or came back '
-    + 'missing a field the app plainly knows. NEITHER LAYER IS COMPLETE ALONE, so never conclude '
-    + 'a field is unavailable from one of them: measured on a chat app, the store held only '
-    + 'privacy identifiers where a phone number belonged while the rendered page displayed the '
-    + 'real numbers the app had resolved for display. If a state read lacks what the app plainly '
-    + 'shows, re-read the DOM with page_study and list_extract before reporting it absent — and '
-    + 'the reverse when the DOM gives a truncated or link-less list. '
-    + 'A SECOND MEASURED EXAMPLE, because it is the one that keeps being missed — X/Twitter: its '
-    + 'timeline mounts about 9 <article> cells no matter how far you scroll, so any DOM read of a '
-    + 'feed returns single digits and looks like the end of the feed. Path '
-    + '"scroller.context.store.getState.entities.tweets.entities" held 284 complete tweets at the '
-    + 'same moment, keyed by id, each with full text, engagement counts and media — including '
-    + '`video_info.variants[]`, the real mp4 urls, which the DOM never carries. '
-    + '"...entities.users.entities" beside it resolves authors (name, screen_name, '
-    + 'followers_count, is_blue_verified) without a second pass. Unlike the DOM it keeps what '
-    + 'scrolled out of view. For turning one post into a downloadable mp4 without an open tab, '
-    + 'see `resolve_x_video`. '
-    + 'Credential-shaped values come back masked by design '
-    + '— cookies, bearer and session tokens, anything under a key like auth/secret/session_id, and '
-    + 'any JWT- or API-key-shaped string. The reply counts them as redacted so you can see '
-    + 'something was there; calling again will not unmask them, and nothing you pass can. '
-    + 'THE MASK IS KEYED ON THE NAME, SO IT OVER-CATCHES: a field called "author" matches the '
-    + 'auth prefix and comes back redacted although it holds no secret. The mask is shallow — '
-    + 'name the leaf you want ("...author.username") and it returns. If a plainly harmless field '
-    + 'reads as redacted, that is what happened; do not report the data as unavailable. '
-    + 'STRINGS ARE TRUNCATED at a few hundred characters and neither limit nor offset raises it — '
-    + 'they page collections, not text. For long text read a narrower path, or read the rendered '
-    + 'element with @dom / @html instead. '
-    + 'WHEN THE STORE IS UNREACHABLE, THE RENDERED TREE STILL CARRIES THE RECORDS. Frameworks hang '
-    + 'their own data off the DOM nodes: in React every element has __reactFiber$<key> and '
-    + '__reactProps$<key>, where <key> is a per-document random suffix that changes for every tab. '
-    + 'Discover it by asking for a property that does not exist — the error lists the real ones — '
-    + 'then read props directly, or walk .return upward to the component that owns the whole '
-    + 'collection, which is usually two or three levels up and holds every row at once. '
-    + 'ROWS FROM THE PSEUDO-PATHS COME BACK IN THE REPLY ONLY. They carry no resultId, so '
-    + 'results action:"get" and action:"export" cannot reach them — if the person needs a file, that is '
-    + 'list_extract\'s job, not this one.',
+    'Read the app\'s own in-memory state (the store the page renders from), or a DOM, markup or '
+    + 'network slice, by data path; it never takes code. tabId alone maps what state exists and the '
+    + 'path to each; `path` reads one slice. Best for: virtualized lists and fields the DOM omits. '
+    + 'Not recommended for: what the page already shows (list_extract is cheaper). Credentials come '
+    + 'back masked.',
     { tabId: N('From current_page, tab_here or tabs_list.'),
-      path: S('Omit for discovery. Otherwise EITHER a store path or a PSEUDO-PATH. '
-        + 'Store path: taken from a discovery sources[].path, e.g. "__INITIAL_STATE__.chats[0]" '
-        + 'or "@stores.0.getState". Dots, [0] for an index, ["any key"] for a key that is not a '
-        + 'plain word. '
-        + 'PSEUDO-PATHS READ THE RENDERED PAGE INSTEAD OF THE STORE, and THE PARENTHESES ARE PART '
-        + 'OF THE SYNTAX — bare "@dom" is not a shorter way to say it, it is an error that reads '
-        + 'like the feature is missing: '
-        + '"@dom(<css>)" returns the matched elements as rows of text/label/href/img, with '
-        + 'hidden:N when the page holds more — the fix for a list_extract that came back short, '
-        + 'and for icon rails whose only name is an aria-label. IT NEVER RETURNS A CUSTOM '
-        + 'ATTRIBUTE — text/label/href/img only. For a data-* or any other attribute, read one '
-        + 'element at a time with @html below, or — if what you need is that SAME attribute off '
-        + 'EVERY row of a page reachable by a fresh URL load — call page_harvest with `urls` set '
-        + 'to that one page\'s own address (no `links`) and `rows.fields` using "css@attr": one '
-        + 'call reads the attribute off every row instead of one index at a time. This does not '
-        + 'work on a page whose current state cannot be reproduced by loading its URL fresh — a '
-        + 'live, session-paginated list (page 2+ of an inbox with no stable per-page URL) still '
-        + 'needs the per-index route below. '
-        + '"@html(<css> :: <depth> :: <index>)" returns the markup itself, scoped and stripped, '
-        + 'with the TRUE length beside what was returned — reach for it the moment another tool '
-        + 'refuses something you can plainly see. WHEN YOU NEED THIS FOR MANY INDICES on the '
-        + 'SAME already-loaded page (the bulk route above does not apply), send those calls '
-        + 'IN PARALLEL, several to a turn, rather than one at a time waiting on each reply — the '
-        + 'page is static between reads so concurrent indices are safe, and this is the '
-        + 'difference between one round trip and dozens of sequential ones. '
-        + '"@map(<scope>)" expands the disclosures inside scope and splits links (href) from '
-        + 'controls (button-routed), which is how a collapsed tree stops under-reporting. '
-        + '"@collect(<row css> :: <hops> :: <up|down>)" harvests a recycler that never grows — it '
-        + 'reads at EVERY step, dedupes by row identity, and ends with dry (really finished), '
-        + 'capped (ran out of hops, THERE IS MORE) or limit (hit the row cap). Direction defaults '
-        + 'to down; pass "up" for older content, because a conversation loads its history upward. '
-        + 'It drives the pane with wheel and PageDown gestures, since some apps load nothing at '
-        + 'all from an assignment to scrollTop. '
-        + 'For a whole history do NOT scroll up from the bottom — jump to the boundary first '
-        + '(the app\'s own oldest-first URL, e.g. a trailing /0, or ?page=1 / sort=oldest) and '
-        + 'then @collect downward. '
-        + '"@await(<css> :: <mode> :: <ms>)" WAITS FOR A CONDITION INSTEAD OF GUESSING A DURATION, '
-        + 'and it is the answer to almost every "it worked that time" in this system. Modes: '
-        + 'exists (default), gone, still (the count stopped changing), or a NUMBER meaning at least '
-        + 'that many matched. Reach for "gone" on a spinner or skeleton wherever one exists — '
-        + 'waiting for CONTENT cannot tell a slow page from an empty one, but a spinner leaving is '
-        + 'unambiguous. Reach for "still" when a grid paints in pieces, which is what makes a first '
-        + 'read say 14 on a page holding 54. It NEVER throws on timeout: ok:false comes back with '
-        + 'matched, peak and waitedMs, because how many arrived and which way the number was moving '
-        + 'is what tells you whether to wait longer or stop. page_harvest takes the same grammar as '
-        + 'its `awaitFor`, applied per page. '
-        + '"@fetch(<url>)" ASKS THE PAGE TO MAKE A REQUEST instead of you opening a tab for it — '
-        + 'SAME ORIGIN as the tab, GET only, the person\'s own session. THIS IS THE LEVER WHEN A '
-        + 'DETAILS PASS IS SLOW. Measured on shopee.com.br: one tab per product cost 15-20s each, '
-        + 'so 120 products ran for most of an hour and finished 48 — because a client-rendered '
-        + 'product page spends nearly all of that rendering images and trackers around ONE json it '
-        + 'fetched. Fetch that json and a record costs a fraction of a second. It also reaches what '
-        + 'an address bar cannot: a site that signs its own requests (Shopee hooks fetch and XHR '
-        + 'with an anti-crawler SDK and answers a bare navigation with error 90309999) signs this '
-        + 'one too, because it runs IN the page. Find the url once with tab_here({network:"*"}), '
-        + 'see which response held what you want, then replace the per-record navigation with '
-        + '@fetch on that url with the id substituted. Cross-origin is refused on purpose — the '
-        + 'consent the person gave is for the site in front of them. '
-        + 'These six ride this tool rather than being tools of their own, so a client holding a '
-        + 'stale tool list can still reach them.'),
-      reply: N('@collect only: cap how many rows come BACK, without capping how far it WALKS. '
-        + 'They used to be one number, so keeping a reply small also stopped the scrolling — and a '
-        + 'second call then ended `limit` with hopsRun:0, which reads exactly like the site '
-        + 'refusing to load more. Set `limit` for how far to go and `reply` for how much to see; '
-        + 'the reply carries collected, shown and next. Omit it and you get every row, as before.'),
-            fields: A('Reduce each row of a COLLECTION to just these field paths, e.g. '
-        + '["__x_id.user","__x_name"]. Cuts the cost of a row enormously — a record with 46 fields '
-        + 'costs ~120 of the reply\'s budget, five fields cost a fraction — which is what makes a '
-        + 'long collection readable in one call instead of thirty. Ignored on a scalar or a single '
-        + 'object, where it would mean nothing.'),
-      resolve: O('A KEYED JOIN, for a collection whose rows only reference their records. Give '
-        + '{from, into, fields}: `from` is the field path holding the key, `into` is the path of the '
-        + 'collection to look it up in, `fields` are the paths to merge in from the record found. '
-        + 'Best for: a list of opaque ids — a chat app\'s group members are privacy identifiers, and '
-        + 'the phone number lives in the contact collection under that same key; a storefront\'s '
-        + 'listing rows against its product or stock collection. Without this, an agent makes one '
-        + 'call per row and assembles the table itself. A key that matches nothing sets '
-        + '@resolved:false on that row and is COUNTED in joinMisses — never dropped, so a join that '
-        + 'loses rows cannot look like a shorter list.'),
-      offset: N('Where to start inside a collection, for reading past the first screenful. A reply that did not reach the end carries next — pass that back as offset to continue. Default 0.'),
-      limit: N('Entries returned per array or object. Default 25, max 200 — the TRUE total is '
-        + 'always reported beside what was returned.'),
-      depth: N('How many levels down to serialize. Default 3, max 6. Deeper is not always better: '
-        + 'a store is an application\'s whole memory, and a narrower path beats a deeper read.') },
+      path: S('Omit to discover. A store path ("__NEXT_DATA__.props", [0], ["k"]) or a '
+        + 'pseudo-path, parens required: @dom() @html() @map() @collect() @await() @fetch() @net()'),
+      reply: N('@collect only: cap how many rows come BACK without capping how far it walks (`limit` '
+        + 'does that). The reply carries collected, shown and next.'),
+      fields: A('Keep only these field paths on each row of a collection, e.g. ["id","name"]. The '
+        + 'biggest saving on a long collection.'),
+      resolve: O('A keyed join {from, into, fields}, for rows that only reference their records by '
+        + 'id. Misses set @resolved:false and count in joinMisses; none is dropped.'),
+      offset: N('Where to start inside a collection. A reply that did not reach the end carries '
+        + 'next; pass it back here. Default 0.'),
+      limit: N('Entries returned per array or object. Default 25, max 200; the true total is always '
+        + 'reported.'),
+      depth: N('Levels to serialize. Default 3, max 6. A narrower path beats a deeper read.'),
+      where: WHERE() },
     ['tabId']),
 
   T('list_extract',
-    'SCROLL BEFORE YOU STUDY. Everything this returns describes the page AS IT IS NOW, and most list pages mount ONE SCREENFUL and add the rest as you move down them: call page_grow until it reports grew:false, and only then read or study. Measured on shopee.com.br, a first read saw 14 product links and reported total:14 on a page that held 54 once grown — nothing about the first answer looked partial. A count taken before growing is a FLOOR, and every plan sized on it (tabs to open, pages to walk, whether to fan out) is scaled wrong. '
-    + 'THE FAST PATH, AND THE ONE TO TRY FIRST. Reads the rows already on this page — seconds, no page '
-    + 'opens, no rate-limit surface. If everything you need is on the cards, stop here: page_harvest '
-    + 'costs one page load PER ROW and is minutes for the same answer.\n'
-    + 'Start reading the list on a tab into a table, following its pages. Returns a runId '
-    + 'IMMEDIATELY — the work continues in the background and can take minutes. Poll results action:"status". '
-    + 'Never assume it finished. When the page holds more than one scrollable region — a chat '
-    + 'app\'s sidebar list beside an open conversation, a filter rail beside results — the '
-    + 'automatic ranking can grow and read the wrong one: pass selector with the CSS selector of '
-    + 'the container the person actually means (from page_study lists[].selector) and the run '
-    + 'grows and reads THAT container, never the auto-pick. If the selector matches nothing the '
-    + 'call fails naming it instead of silently falling back — a silent fallback to the wrong '
-    + 'pane is the bug this parameter exists to prevent. '
-    + 'IT MUST FIRST AGREE THAT SOMETHING IS A LIST, and when it disagrees it does not refuse — it '
-    + 'returns a little. Measured: an icon rail of 23 entries, which page_study itself counted as '
-    + '23 rows, came back as ONE row; a chat log came back as sentence fragments carrying no '
-    + 'author and no timestamp. Neither is a broken page. Rows that are not uniform — icons, '
-    + 'message groups, date dividers — are not what this tool is for. When the count coming back '
-    + 'is far below what is on screen, stop growing it and read the container with @dom(<css>) '
-    + 'via page_state instead. '
-    + 'Use this when the rows ARE uniform, there are many, they page, and the person wants a file '
-    + 'at the end — that last part is the case nothing else covers, since the pseudo-paths return '
-    + 'rows into the reply with no resultId to export.',
+    'Read the repeating rows on a tab into a saved table, following its pagination. Starts a '
+    + 'background run and returns a runId at once; poll results action:"status", then get or export. '
+    + 'Pass `selector` (from page_study lists[].selector) when the page holds more than one list. '
+    + 'Reads list pages only and never opens records, so it is the fast path when the cards already '
+    + 'show the fields.',
     { tabId: N('The tab holding the list.'),
       pages: N('How many pages to follow. 0 or omitted means keep going until the list ends.'),
-      withRecords: B('Also open each row\'s own record page and fill in the extra columns. '
-        + 'Slower, and much richer — this is what turns a listing into contact details.'),
-      selector: S('CSS selector of the container to extract, for when the ranking might choose '
-        + 'the wrong pane. Take it from page_study lists[].selector, or point at the pane itself; '
-        + 'the pinned choice survives the run\'s internal re-detections. Omit to accept the '
-        + 'ranked choice.') },
+      withRecords: B('Also open each row\'s own record page and fill in the extra columns. Slower, '
+        + 'and much richer.'),
+      selector: S('CSS of the container to extract, from page_study lists[].selector. Matches '
+        + 'nothing: the call fails naming it. Omit to accept the ranked choice.'),
+      // THE ENGINE COULD ALWAYS BE POINTED AT A PAGER AND NO AGENT COULD DO THE POINTING.
+      // `findNextPage(sel)` lets a named control outrank every guess, and the panel reaches it; this
+      // schema exposed only tabId, pages, withRecords and selector, so a walk that ended "no further
+      // pages" with a link called "next" in plain view had no override to reach for. The argument
+      // rides straight through OPS to `list.extract` — nothing here interprets it.
+      next: S('The next-page control, as a CSS selector or an href. Outranks every guess; use it when '
+        + 'a walk stopped early and the reply lists nearMisses.'),
+      where: WHERE() },
     ['tabId']),
 
   T('results',
-    'Saved tables and the runs that fill them, under one action. THE RUN IS NOT THE TABLE: '
-    + 'list_extract and a backgrounded page_harvest return a runId that is still working, and only '
-    + 'a finished run has a resultId. So: action:"status" while it runs, action:"get" or '
-    + '"export" once it is done. '
-    + 'status — running, reading_records, waiting_for_user, done, failed. waiting_for_user means '
-    + 'the SITE asked the person to prove they are human: relay that and wait. Do NOT retry and do '
-    + 'NOT start another run, because retrying is what turns a check into a block. '
-    + 'stop — end a run early; what it already read is kept. '
-    + 'list — tables already extracted and saved in this browser, newest first. Check here before '
-    + 'scraping something again. '
-    + 'get — rows and column names. Returns data, never HTML. Large tables are truncated and the '
-    + 'reply gives the true total. '
-    + 'export — write the whole table to a CSV in the person\'s Downloads and return the filename. '
-    + 'Use this instead of get when the table is too big to be worth reading into the conversation. '
-    + 'download — save the ASSETS a deep scan found (images, video, audio) as FILES in the person\'s '
-    + 'Downloads. The pictures never travel through this conversation: bytes in a reply would cost '
-    + 'tens of megabytes for one page, and handing you urls to fetch yourself drops the person\'s '
-    + 'cookies so anything behind a login answers with a login page. The browser downloads them '
-    + 'signed in, as them. '
-    + 'THIS ONE NEEDS A HUMAN. Every call raises a card in the HoloScrape side panel naming the count '
-    + 'and the site, and nothing is written until a person presses Save. There is no way to '
-    + 'pre-authorise it and origin consent does not cover it. Two refusals to relay rather than '
-    + 'retry: the panel is not open (nobody to ask — the person opens it), and declined (do NOT ask '
-    + 'again straight away; a prompt asked twice is a prompt clicked without reading). '
-    + 'Assets exist in a result only if the person ran a deep scan in the panel — there is no call '
-    + 'that starts one. If a result holds rows but no assets the reply says so; use export for rows. '
-    + 'OR pass `urls` and skip the result entirely: any addresses you already hold can be saved the '
-    + 'same way, behind the same press. '
-    + 'AN X (TWITTER) VIDEO IS RESOLVED BEFORE IT IS SAVED, automatically, whenever a scan learned '
-    + 'the post\'s id for it — a raw captured X video url is often session-bound or one small DASH '
-    + 'fragment rather than the whole clip, so this asks X\'s public syndication API for the real '
-    + 'file first. The reply carries `resolvedX` (a count) when this happened; nothing to ask for, '
-    + 'it just means the file that landed is not necessarily the url the scan reported. For a post '
-    + 'url or id that was never scanned, see `resolve_x_video` instead.',
-    { action: S('Which one: "status" or "stop" (need runId), "list", "get", "export", "download" '
-      + '(need resultId), or "merge" (needs resultIds).',
-      { enum: ['status', 'stop', 'list', 'get', 'export', 'download', 'merge'] }),
-      runId: S('From list_extract or a backgrounded page_harvest. For action status and stop.'),
-      resultId: S('From a finished run, or from action:"list". For action get and export.'),
-      resultIds: { type: 'array', items: { type: 'string' },
-        description: 'action merge only: two or more resultIds to combine. TWO PASSES OVER THE '
-          + 'SAME LIST ARE ONE ANSWER — a thin page is usually transient, so re-running and '
-          + 'keeping the better of each row is the cheap way to finish a hard site. Measured over '
-          + '625 products: pass one read 529, pass two 563, only 10 failed both, union 615 (98%). '
-          + 'Merging happens in the browser; the rows never pass through you.' },
-      key: S('action merge only: the COLUMN that identifies a row across passes — usually the '
-        + 'source url or an id. Rows that have no value for it are kept and counted as `unkeyed` '
-        + 'rather than dropped. Within a matched row the LONGER value wins per field, which '
-        + 'matters because a column can report 100% filled while a third of it is "-" or a '
-        + 'truncated stub.'),
-      into: S('action merge only: save the merge as a NEW result under this name and return its '
-        + 'resultId, instead of returning the first 100 rows inline. Use this for anything you '
-        + 'intend to export.'),
-      limit: N('action get only: rows to return in THIS call. Default 100, max 1000.'),
-      offset: N('action get only: where to start, for taking a big table a page at a time. '
-        + 'Default 0. The reply carries nextOffset and `more` whenever rows remain — pass '
-        + 'nextOffset back here and repeat until truncated is false. Without this a table larger '
-        + 'than one reply could be started and never finished; for everything at once, '
-        + 'action:"export" writes a CSV and a file has no reply-size limit.'),
-      columns: { type: 'array', items: { type: 'string' },
-        description: 'action get only: only these columns. Omit for all of them.' },
-      types: { type: 'array', items: { type: 'string' },
-        description: 'action download only: save just these kinds — "image", "video", "audio". '
-          + 'Omit for everything the scan found. A kind that is not in the result is named back to '
-          + 'you with what is, rather than answered with a silent zero.' },
-      urls: { type: 'array', items: { type: 'string' },
-        description: 'action download only: save these addresses instead of a result\'s assets — for '
-          + 'urls you already hold from anywhere: a harvested column, a `@net` payload, an API '
-          + 'response. http(s) only; a data: or blob: url cannot be fetched on your behalf. The same '
-          + 'human gate applies, and the card names the DISTINCT HOSTS as well as the count, because '
-          + 'a list you assembled can span many sites. Use this rather than fetching the urls '
-          + 'yourself: the browser downloads them signed in as the person, so anything behind a '
-          + 'login arrives intact instead of as a saved login page.' },
-      max: N('action download only: cap how many files. Default 500, max 2000. The person sees this '
-        + 'number on the card they approve.') },
+    'Runs and saved tables. status and stop take a runId. list shows saved tables. get returns rows, '
+    + 'paged by limit, offset and columns; with `saveTo` the server writes the whole table to a file '
+    + 'instead. export writes a CSV to Downloads. merge combines passes. download saves assets or '
+    + '`urls`. guide is the manual. No resultId until a '
+    + 'run is done.',
+    { action: S('status | stop (runId); list; get | export | download (resultId); merge (resultIds); '
+      + 'guide (optional topic).',
+      { enum: ['status', 'stop', 'list', 'get', 'export', 'download', 'merge', 'guide'] }),
+      runId: S('From list_extract or a backgrounded page_harvest. For status and stop.'),
+      resultId: S('From a finished run, or from action:"list". For get, export and download.'),
+      resultIds: A('merge: two or more resultIds. Two passes over one list are one answer; the merge '
+        + 'runs in the browser.'),
+      key: S('merge: the column that identifies a row across passes, usually the source url. The '
+        + 'longer value wins per field; rows without it count as unkeyed.'),
+      into: S('merge: save as a NEW result under this name and return its resultId. Use it for '
+        + 'anything you will export.'),
+      limit: N('get: rows in this reply. Default 100, max 1000. Ignored with saveTo.'),
+      offset: N('get: where to start. The reply carries nextOffset and more while rows remain; '
+        + 'repeat until truncated is false.'),
+      columns: A('get: only these columns. Omit for all of them.'),
+      saveTo: S('get or export: ABSOLUTE path ending .csv or .json, under home or tmp. The server '
+        + 'writes every row there and replies {path, rows, bytes}. Never overwrites.'),
+      topic: S('guide: a word from a section title. Omit for the list of sections.'),
+      types: A('download: only these kinds: "image", "video", "audio". Omit for everything the scan found.'),
+      urls: A('download: save these http(s) addresses instead of a result\'s assets. Same human '
+        + 'approval; the browser fetches them signed in as the person.'),
+      max: N('download: cap on files. Default 500, max 2000. The person sees this number on the card.') },
     ['action']),
 
   // X (TWITTER)-SPECIFIC, AND SAYS SO IN ITS OWN NAME — this is not the hostname-branching bug a
@@ -666,68 +285,15 @@ const TOOLS = [
   // never scanned (a search result, a harvested column, a link someone pasted) and want the real
   // mp4 url directly, or you want to hand it to something other than the browser's own downloader.
   T('resolve_x_video',
-    'Turn an X (Twitter) post into a real, plain, third-party-fetchable video/mp4 url — resolved '
-    + 'through X\'s own public syndication API (unauthenticated, the same endpoint its oEmbed '
-    + 'embeds use), which returns the highest-bitrate whole file rather than whatever fragment or '
-    + 'session-bound url happened to be captured. '
-    + 'RUNS ENTIRELY ON THIS MACHINE. Needs no browser tab, no pairing, no origin consent, and '
-    + 'works even with Chrome closed — it is one HTTPS call to a public X endpoint, nothing this '
-    + 'tool touches is the person\'s own browser or session. '
-    + 'Give EITHER `url` (an x.com or twitter.com post address — the id is read out of it) or '
-    + '`statusId` (the bare numeric id) directly. Add `videoId` only to disambiguate a tweet '
-    + 'carrying more than one video (a quote-post keeping its own clip alongside the quoted '
-    + 'post\'s) — pull it from a captured asset url\'s own amplify_video/<id>/ or '
-    + 'ext_tw_video/<id>/ segment; omitted, the highest-bitrate video on the tweet wins. '
-    + 'Returns {url, statusId} on success. A tweet with no video, a bad id, or a lookup failure '
-    + 'comes back {url: null, why} rather than throwing — "no video here" is an ordinary answer, '
-    + 'not an error to retry. '
-    + 'For files a deep scan already found in the panel, `results action:"download"` resolves '
-    + 'this the same way automatically before saving — reach for this tool instead when you hold '
-    + 'a post url or id that was never scanned, or want the url itself rather than a saved file. '
-    + 'THE RETURNED URL NEEDS NO COOKIES OR SESSION, SO IT CAN BE FETCHED DIRECTLY — curl, a '
-    + 'script, anything outside the browser — instead of routing it through `results '
-    + 'action:"download"`. That action\'s human-approval gate exists because most assets need the '
-    + 'person\'s own signed-in browser to fetch; a resolved X video needs none of that, so for a '
-    + 'batch of posts the plain path is: collect post urls/ids, call this tool once per post, then '
-    + 'fetch the returned urls yourself. Bulk-finding posts to resolve: on a timeline, a DOM read '
-    + 'for `article:has(video) a[href*="/status/"]` (via `page_state` `@dom(...)`) after scrolling '
-    + 'beats parsing the timeline\'s own GraphQL response — the feed only refetches once you\'ve '
-    + 'scrolled to the true bottom of what is already rendered, which a few scroll-hops rarely '
-    + 'reach. Whatever you fetch yourself, confirm it landed — check the file type and a real byte '
-    + 'size — rather than trusting a 200 or an exit code alone; a session-bound or truncated '
-    + 'response can still return success.\n'
-    + 'CHEAPER STILL WHEN AN X TAB IS ALREADY OPEN: THE PAGE\'S OWN REDUX STORE ALREADY HOLDS THE '
-    + 'MP4 URLS, for every post loaded this session, with no network call and no syndication '
-    + 'lookup at all. Read it with page_state, path '
-    + '"scroller.context.store.getState.entities.tweets.entities" — a map of tweet id -> the whole '
-    + 'tweet, and each one\'s media carry `video_info.variants[]`, which is a list of '
-    + '{bitrate, content_type, url} where the `video/mp4` entries are the real, complete files. '
-    + 'Sort by bitrate and take the top one, exactly as this tool does with the syndication reply. '
-    + 'Beside them the same store holds `entities.users.entities[<id>]` with flat name, '
-    + 'screen_name, followers_count and is_blue_verified — so author details need no second read. '
-    + 'THE STORE IS ALSO THE ANSWER TO X\'S VIRTUALIZATION: measured live, 284 complete tweets sat '
-    + 'in it while the DOM had only about 9 <article> cells mounted, and unlike the DOM it does '
-    + 'not lose what scrolled past. If a timeline read comes back with single-digit rows, that is '
-    + 'the DOM ceiling, not the end of the feed — read the store. Use this tool instead when there '
-    + 'is no open tab holding the post, or when the post was never loaded into that store.\n'
-    + 'GETTING THE ACTUAL FILES, three paths, cheapest first: (1) a deep scan found them — '
-    + '`results action:"download"` resolves each one the same way automatically before saving, and '
-    + 'reports `resolvedX` counting how many it had to rescue; (2) you hold post urls or ids — '
-    + 'call this tool per post and fetch the returned urls yourself, no browser and no approval '
-    + 'gate needed because the resolved url is public; (3) you hold urls from anywhere and want '
-    + 'them saved by the person\'s own signed-in browser — `results action:"download"` with '
-    + '`urls`. WHY THE CAPTURED URL IS USUALLY NOT THE FILE, so you recognise it: X delivers video '
-    + 'as CMAF/DASH fragments, and a fragment url carries an extra "/0/0/" segment — '
-    + '`/vid/avc1/0/0/<W>x<H>/<name>.mp4` is a ~900-byte fragment, while '
-    + '`/vid/avc1/<W>x<H>/<name>.mp4` is the whole clip (6.6MB in the measured pair). A '
-    + '`/aud/mp4a/0/0/<bitrate>/` url is the separate AUDIO track, not a video at all. Any '
-    + 'sub-kilobyte "video" is one of these, never a clip — treat a byte size under a few KB as '
-    + 'proof the resolve did not happen rather than as a small file.',
+    'Turn an X (Twitter) post into a plain, fetchable mp4 url through X\'s public syndication '
+    + 'API. Runs on this machine: no tab, no pairing, no consent. Give `url` or `statusId`; returns '
+    + '{url, statusId}, or {url:null, why} when there is no video: an answer, not a retry. '
+    + 'The url needs no cookies, so fetch it yourself. With an X tab open, page_state reads these '
+    + 'urls from its store.',
     { url: S('An x.com or twitter.com post url. Either this or statusId.'),
       statusId: S('The bare numeric tweet/post id. Either this or url.'),
-      videoId: S('Optional — disambiguates a tweet carrying more than one video. Pull it from a '
-        + 'captured asset url\'s amplify_video/<id>/ or ext_tw_video/<id>/ segment. Omitted, the '
-        + 'highest-bitrate video on the tweet is returned.') },
+      videoId: S('Only for a post carrying more than one video: the id in a captured url\'s '
+        + 'amplify_video/<id>/ segment. Omitted, the highest bitrate wins.') },
     []),
 
 ];
@@ -747,12 +313,21 @@ const OPS = {
   // ONE NAME, FIVE OPS. A value may be a function of the arguments — the only place the tool
   // surface is allowed to branch, so that consolidating names does not push a second dispatch
   // into `index.mjs`. Everything else stays a plain string.
+  //
+  // `merge` WAS IN THE SCHEMA'S ENUM, IMPLEMENTED IN THE EXTENSION, AND MISSING HERE — so the
+  // advertised call answered "results needs a valid action — got \"merge\"" and the 625-product
+  // two-pass recovery its description promised could not be run by an agent at all. Found by the
+  // check in test/mcp-surface-budget.mjs that every enum value resolves to something.
+  // `guide` has no browser op on purpose: see LOCAL_ACTIONS.
   results: (a) => ({
     status: 'run.status', stop: 'run.stop',
     list: 'results.list', get: 'results.get', export: 'results.export',
-    download: 'results.download',
+    download: 'results.download', merge: 'results.merge',
   }[String(a?.action || '')] || ''),
 };
+
+// Actions answered by this process without asking the browser anything — see `PRE` at the bottom.
+const LOCAL_ACTIONS = ['guide'];
 
 // A walk can take minutes; everything else is a page load at worst.
 
@@ -767,7 +342,7 @@ const OPS = {
 // screen next to itself. Same shape as SLOW below it.
 //
 // THEY ARE HINTS AND NOT ENFORCEMENT. The spec is explicit that a client may ignore them, so
-// nothing here is load-bearing for safety — the per-origin consent in the extension is. These
+// nothing here is load-bearing for safety — pairing and the restricted-host list in the extension are. These
 // change how often a person is interrupted, not what can happen to them.
 const READ_ONLY = new Set([
   // Read the browser or a saved table. None of them navigate, press, scroll or open anything.
@@ -799,11 +374,13 @@ const COST = {
   minutes: ['list_extract', 'page_walk', 'page_explore', 'page_harvest'],
   seconds: ['site_probe', 'page_grow', 'tab_open', 'search_open', 'results_export', 'tab_here'],
 };
+// THE TIER STAYS ON THE DESCRIPTION, THE SENTENCE EXPLAINING IT MOVED. Three words a tool is what
+// fits inside a 400-char budget; "it presses, scrolls or walks pages one after another, so budget
+// for it and prefer a cheaper tool when one will answer" is in the guide under choosing a route.
 const COST_TEXT = {
-  minutes: ' COST: minutes. It presses, scrolls or walks pages one after another, so budget for it '
-    + 'and prefer a cheaper tool when one will answer.',
-  seconds: ' COST: seconds — it loads or moves a page.',
-  instant: ' COST: instant. Reads what is already there; cheap enough to call before guessing.',
+  minutes: ' Cost: minutes.',
+  seconds: ' Cost: seconds.',
+  instant: ' Cost: instant.',
 };
 const tierOf = (name) => (COST.minutes.includes(name) ? 'minutes'
   : COST.seconds.includes(name) ? 'seconds' : 'instant');
@@ -826,9 +403,41 @@ const LONG = new Set([
 ]);
 const MEDIUM = new Set(['tab_open', 'search_open', 'site_probe', 'tab_here']);
 
-// 30s was never enough for a walk; 10 minutes covers page_walk at its documented maximum
-// (100 presses x 8s) with room for the reads between them.
-const timeoutFor = (name) => (LONG.has(name) ? 600000 : MEDIUM.has(name) ? 60000 : 30000);
+// THE THREE CEILINGS. 30 s was never enough for a walk; 10 minutes covers page_walk at its
+// documented maximum (100 presses x 8 s) with room for the reads between them; a minute covers a
+// document load on the person's own connection, which a marketplace on a slow link really does
+// take. The default is what an ordinary read is given.
+const TIMEOUT_LONG_MS = 600000;
+const TIMEOUT_MEDIUM_MS = 60000;
+const TIMEOUT_DEFAULT_MS = 30000;
+const timeoutFor = (name) => (LONG.has(name) ? TIMEOUT_LONG_MS : MEDIUM.has(name) ? TIMEOUT_MEDIUM_MS : TIMEOUT_DEFAULT_MS);
+
+// --- the thresholds the reply hints turn on ------------------------------------------------------
+// Each `NEXT` hint below fires only when the reply itself shows a condition holds; these are the
+// lines it draws. None changes what the browser did — only whether a sentence is added.
+//
+// A blocking harvest past this many pages should have been `background:true`, so it could be
+// polled, reported on and stopped. Same number the page_harvest description quotes ("over about
+// 20 pages").
+const BLOCKING_PAGES_MAX = 20;
+// A column is COARSE — a category, a currency, or a seller's rating copied onto every listing —
+// when it is filled on at least this many rows and holds at most this share of distinct values.
+// The measured case: `rating` filled 66 of 70 and documented as each item's rating; it was the
+// SELLER's, provable from a row reading "4 out of 5 stars" over three five-star reviews.
+const COARSE_MIN_FILLED = 20;
+const COARSE_DISTINCT_SHARE = 0.2;
+// A feed is LOOPING when at least this percentage of the rows a grow returned were rows it had
+// already given. Measured: one marketplace re-serves the same ~284 products until the DOM holds 2,000.
+const LOOPING_PCT_MIN = 50;
+// A pseudo-path read that returned at least this many rows is a table someone may want as a file,
+// and pseudo-path rows carry no resultId — so the hint names list_extract as the route.
+const PSEUDO_ROWS_FILE_HINT = 25;
+// `results get`: when more rows than this remain past the page returned, paging them through the
+// conversation is the expensive route and saveTo is offered. One SAVE_PAGE's worth.
+const MORE_ROWS_SAVE_HINT = 1000;
+// How long a `results.get` page is given when writing a file — a thousand rows serialised out of
+// the extension's storage, per page, on a table that may be tens of thousands.
+const SAVE_ASK_MS = 120000;
 
 // Superseded by timeoutFor() above, which gives three tiers instead of two — kept because it is
 // what an older index.mjs reads, and a server that reloads this file while running is holding one.
@@ -853,21 +462,25 @@ for (const t of TOOLS) {
 // WHAT TO CALL NEXT, WRITTEN ONTO THE REPLY THAT PROVES IT.
 //
 // MCP has no way to link one tool to another: a tool is a name, a description and a schema, and
-// nothing in the protocol says "after this, that". So eighteen tools arrive as eighteen unrelated
-// options, described once at session start and chosen from long afterwards. Every failure worth
-// naming this session was a COMPOSITION failure rather than a tool failure — page_study found a
-// list that was not uniform and nobody moved to @dom; page_read returned hrefs and they were walked
-// one at a time anyway; a collection was read without a projection four times running. Each
-// individual fact was documented. The arrow between them was not, anywhere.
+// nothing in the protocol says "after this, that". So ten tools arrive as ten unrelated options,
+// described once at session start and chosen from long afterwards. Every failure worth naming was a
+// COMPOSITION failure rather than a tool failure — page_study found a list that was not uniform and
+// nobody moved to @dom; a read returned hrefs and they were walked one at a time anyway; a
+// collection was read without a projection four times running. Each individual fact was
+// documented. The arrow between them was not, anywhere.
 //
 // A DESCRIPTION IS READ ONCE, BEFORE ANYTHING IS KNOWN. A reply arrives at the moment the next
 // choice is being made, and — unlike a description — it can see what was actually found. That is
-// the whole reason the edges live here.
+// the whole reason the edges live here, and since 2026-09-22 it is also where the WARNINGS live:
+// "a background tab loads nothing" cost 300 chars in every session's page_grow description and was
+// read an hour before it mattered; as a line that fires when `page.hidden` is true it costs nothing
+// until the moment it is the explanation.
 //
-// CONDITIONAL, NEVER UNCONDITIONAL. Each edge returns null when there is nothing worth saying, so
-// page_grow is silent unless a harvest came back capped and list_extract is silent unless the row
-// count collapsed. A hint on every reply is noise, and noise in every reply is how a useful field
-// stops being read; a hint only where a decision is about to go wrong is the opposite.
+// CONDITIONAL, NEVER UNCONDITIONAL. Each edge returns null when there is nothing worth saying. A
+// hint on every reply is noise, and noise in every reply is how a useful field stops being read; a
+// hint only where a decision is about to go wrong is the opposite. The rule for adding one: it must
+// test a field of THIS reply (or an argument of this call), and a healthy reply must stay silent —
+// test/mcp-next-hints.mjs feeds each edge a clean reply for exactly that reason.
 //
 // IT SUGGESTS AND NEVER DECIDES. The caller has context this does not, so every line says what the
 // numbers imply and leaves the numbers beside it.
@@ -875,7 +488,84 @@ for (const t of TOOLS) {
 // THE EXTENSION OUTRANKS THIS TABLE. It measured the page — it knows the rail held 23 entries when
 // the extractor returned 1, that a container was collapsed rather than virtualized, that scrollTop
 // never moved. Those hints cannot be reconstructed from the reply alone, so when a reply already
-// carries `next`, index.mjs keeps it and never overwrites it with anything derived here.
+// carries `hint`, index.mjs keeps it and never overwrites it with anything derived here.
+//
+// SOME EDGES ARE KEYED ON FIELDS THAT OTHER WORK PRODUCES (research/CONTRACT-2026-09-22.md): the
+// `page` header {hidden, frames, settled, settleMs, why}, a pager's `nearMisses`, a finished walk's
+// `growable`. They are read defensively and are silent until those fields arrive.
+
+// --- the environment, said on every tool that read a page ------------------------------------------
+// The costliest bug class here is a read that SUCCEEDS on a page that was not ready. It is only
+// catchable where the read happens, which is why the engine reports the state and this turns it
+// into a sentence. Measured on a hidden tab: scrollTop moved 572 -> 3136 across twelve hops with
+// fresh:0 every time, and the same page loaded fine when the tab was focused; the same selector
+// returned 60 populated rows in the active tab and 60 empty ones in a background tab.
+function pageLines(o) {
+  const pg = o?.page;
+  if (!pg || typeof pg !== 'object') return [];
+  const lines = [];
+  if (pg.hidden === true || pg.frames === false) {
+    lines.push(`page.${pg.frames === false ? 'frames:false' : 'hidden:true'} — this tab was not painting when it was read. `
+      + 'Chrome stops animation frames in a tab nobody is looking at, and lazy lists, scroll-loaded '
+      + 'sections and observers ride them: an empty read, a low count or grew:false here says nothing '
+      + 'about the site. Read what the page FETCHES instead (tab_here network, which needs no paint), '
+      + 'or read again once the tab is in front. Do not report this as the site blocking.');
+  }
+  if (pg.settled === false) {
+    lines.push(`page.settled:false — the wait hit its cap${pg.settleMs ? ` (${pg.settleMs} ms)` : ''}`
+      + `${pg.why ? `: ${pg.why}` : ''} while the page was still changing, so every count in this reply `
+      + 'is a FLOOR and an absence is not proven. Read again, or wait on a condition with page_state '
+      + 'path:"@await(<css> :: still)" before sizing anything on it.');
+  }
+  return lines;
+}
+
+// A pager verdict or a finished walk may sit on the reply itself or one object down (`pagination`,
+// `pager`, `out`), depending on which op answered — look in both rather than hard-code a nesting
+// another workstream owns.
+function findKey(o, key) {
+  if (!o || typeof o !== 'object') return undefined;
+  if (o[key] !== undefined && o[key] !== null) return o[key];
+  for (const v of Object.values(o)) {
+    if (v && typeof v === 'object' && !Array.isArray(v) && v[key] !== undefined && v[key] !== null) return v[key];
+  }
+  return undefined;
+}
+
+function pagerLines(o) {
+  const lines = [];
+  const near = findKey(o, 'nearMisses');
+  if (Array.isArray(near) && near.length) {
+    const shown = near.slice(0, 3).map((m) => `"${String(m?.label ?? '').slice(0, 40)}"`
+      + `${m?.rejected ? ` (rejected: ${String(m.rejected).slice(0, 80)})` : ''}`).join('; ');
+    const first = near.find((m) => m?.selector || m?.href) || {};
+    const override = findKey(o, 'override');
+    lines.push(`no next page was accepted, but ${near.length} control${near.length === 1 ? '' : 's'} came close: ${shown}. `
+      + 'The pager is a judgment and it can be overruled: if one of these IS the next page, run it again with '
+      + `${typeof override === 'string' && override ? override : `list_extract {next: "${first.selector || first.href || '<selector or href>'}"}`}. `
+      + 'Do not report the list as ended until you have looked at them.');
+  }
+  const grow = findKey(o, 'growable');
+  if (grow && typeof grow === 'object' && (grow.selector || grow.label)) {
+    lines.push(`a load-more control${grow.label ? ` ("${String(grow.label).slice(0, 40)}")` : ''} is on the page and was NOT `
+      + 'pressed, so the list is longer than what was read. page_grow '
+      + `{selector: "${grow.selector || '<its selector>'}"} until grew:false, then extract again.`);
+  }
+  return lines;
+}
+
+// tab_here and current_page answer the same question — what state is this page in — so they share
+// the lines about it. `rising` and `hasList` are the two fields a plan gets sized on.
+function readinessLines(o) {
+  const lines = [];
+  if (o?.rising === true) {
+    lines.push(`rising:true — rowsOnPage (${o.rowsOnPage ?? '?'}) was still climbing when the wait ran out, so it `
+      + 'is a FLOOR, not a total. Sizing tabs, pages or a fan-out on it is how a run reports 27 of 240. '
+      + 'page_grow until grew:false, or page_state path:"@await(<row css> :: still)", then count.');
+  }
+  return lines;
+}
+
 function nextForCurrentPage(page) {
   if (!page || typeof page !== 'object') return null;
   if (page.challenge) {
@@ -888,10 +578,10 @@ function nextForCurrentPage(page) {
     // and the honest reading of that is "the browser is not usable" — which is what happened.
     if (!page.url) {
       return 'that tab is empty — it is not on a page yet, so there is nothing to consent to. '
-        + 'tab_here to point it at a URL, or tab_open to open one. Neither needs the panel.';
+        + 'tab_here to point it at a URL, or tab_here newTab:true to open one. Neither needs the panel.';
     }
-    return 'this origin has not been consented to yet — the person approves it in the HoloScrape '
-      + 'panel before anything can read it.';
+    return 'that page cannot be read: only http and https pages can be — point the tab at a web '
+      + 'page with tab_here.';
   }
   const rows = Number(page.rowsOnPage) || 0;
   if (page.hasList && rows > 3) {
@@ -910,127 +600,525 @@ function nextForCurrentPage(page) {
     + 'have little to say here.';
 }
 
+// What a harvest's numbers imply. Shared, because a backgrounded harvest hands the same object back
+// through results action:"status" once it is done, and the lesson is about the numbers, not the door.
+function harvestLines(o) {
+  const lines = [];
+  if (o?.walled) {
+    lines.push('walled:true — the site asked to verify a human and every lane stopped. Relay that to the '
+      + 'person and wait; do NOT retry, because retrying is what turns a check into a block. When it has '
+      + 'cleared, page_harvest {retryOf:"<this runId>", lanes:2} finishes only what is left.');
+    return lines;
+  }
+  const pages = Number(o?.pages) || 0;
+  const read = Number(o?.read) || 0;
+  const failed = Number(o?.failedCount) || 0;
+  if (o?.nextFrom !== undefined && o?.nextFrom !== null) {
+    lines.push(`limit DROPPED pages, it did not trim this reply: ${o.matched ?? '?'} links matched and `
+      + `${o.skipped ?? '?'} were not opened. Pass from:${o.nextFrom} for the next fold.`);
+  }
+  if (o?.capped) {
+    lines.push('capped — a page held more repeating rows than rows.limit (default 500), so the table is '
+      + 'short of what the pages hold. Raise rows.limit and re-run those pages.');
+  }
+  if (pages && Number(o?.netMissed) >= pages) {
+    lines.push(`netMissed:${o.netMissed} of ${pages} — no response matched \`network\` on ANY page, which means `
+      + 'the filter is wrong, not the site. tab_here {network:"*"} on one record page lists the urls it '
+      + 'really fetches.');
+  }
+  if (failed > 0) {
+    lines.push(`${failed} page${failed === 1 ? '' : 's'} gave nothing (failed[] says why). A thin page is `
+      + 'usually transient, not a bad page: page_harvest {retryOf:"<this runId>"} re-runs only those, and '
+      + 'results action:"merge" keeps the better of each row. Add awaitFor if the misses look like timing.');
+  }
+  if (read > 0 && Number(o?.rows) === 0) {
+    lines.push(`${read} pages were read and none gave a row: that is the SELECTOR, not the site. The commonest `
+      + 'cause is a hashed classname copied off the list page, which differs on the record page. Confirm '
+      + 'with page_state path:"@dom(<css>)" on ONE record page, or use ":self" for the row\'s own text.');
+  }
+  if (Number(o?.late) > 0 && !o?.tryNetwork) {
+    lines.push(`late:${o.late} — that many pages answered only on the second look. It means client-rendered `
+      + 'and slower, NOT blocked.');
+  }
+  // `distinct` is reported by the engine as a fact and deliberately not interpreted there, because a
+  // threshold tight enough to catch a shop's rating on every listing also fires on every honest
+  // currency column. So this line names the columns and the check, and claims nothing about them.
+  // The line it draws is `COARSE_MIN_FILLED` / `COARSE_DISTINCT_SHARE`, with the measured case.
+  const coarse = Object.entries(o?.fields || {})
+    .filter(([, f]) => f && Number(f.filled) >= COARSE_MIN_FILLED && Number(f.distinct) > 0 && f.distinct <= f.filled * COARSE_DISTINCT_SHARE)
+    .map(([k, f]) => `${k} (${f.distinct} distinct over ${f.filled})`);
+  if (coarse.length) {
+    lines.push(`few distinct values: ${coarse.slice(0, 4).join(', ')}. Expected for a category or a currency. `
+      + 'For a value you asked for PER RECORD it usually means the field belongs to something coarser — the '
+      + 'shop, the page, the site. Check one row against its own contents before naming what it means.');
+  }
+  if (Array.isArray(o?.alsoRows) && o.alsoRows.length) {
+    lines.push(`this page\'s ld+json also carried ${o.alsoRows.slice(0, 5).join(', ')}; name one with rows.from `
+      + 'to make IT the rows.');
+  }
+  return lines;
+}
 
-// The edges. Keyed by tool name; each gets that tool's own reply and returns a line or null.
-const NEXT = {
-  current_page: nextForCurrentPage,
+// The edges. Keyed by tool name; each gets that tool's own reply AND the arguments that produced
+// it, and returns a line or null. The arguments arrived with the consolidation: `results` is seven
+// actions and page_grow is three modes, and which one was asked for is not always in the reply.
+const EDGES = {
+  current_page: (o) => [...readinessLines(o), nextForCurrentPage(o)],
+
+  tab_here: (o, a) => {
+    if (a?.close) return null;
+    const lines = [];
+    if (o?.challenge) {
+      lines.push(`the site is showing a check (${o.challenge}) — relay that to the person and let them `
+        + 'clear it. Do NOT retry; retrying is what turns a check into a block.');
+      return lines;
+    }
+    if (o?.arrived === false) {
+      lines.push('arrived:false — the tab\'s URL did not change, so whatever you read next is the page it '
+        + 'was ALREADY on. A redirect back, a refused navigation and a same-page route all look like this.');
+    }
+    lines.push(...readinessLines(o));
+    if (o?.hasList === false && !a?.network && o?.arrived !== false) {
+      lines.push('hasList:false on a page you believe is a list means you are early, or the rows are FETCHED '
+        + 'rather than rendered. Do not plan on it: call tab_here again with network:"*" to map what the '
+        + 'page fetches, which is complete long before the DOM is.');
+    }
+    if (a?.network && o?.network && (Array.isArray(o.network) ? o.network.length : true)) {
+      lines.push(a.network === '*'
+        ? 'this is a MAP, not the data: pick the response holding your fields, then hand a substring of its '
+          + 'url to page_harvest {network} (or page_grow {network, rows}) with the $. paths printed here as '
+          + 'fields. Choose a fragment only a data call can have — a filter matches stylesheets and images too.'
+        : 'the captured bodies are here once; to read the same response on every record, give this filter '
+          + 'to page_harvest {network} with $. paths as fields rather than navigating page by page.');
+    }
+    if (a?.newTab && !a?.close && o?.tabId != null) {
+      lines.push(`tab ${o.tabId} is NEW and nothing will close it: tab_here {tabId:${o.tabId}, url, close:true} `
+        + 'when you are done, or the person clears it by hand.');
+    }
+    return lines;
+  },
 
   // A ranked list is only worth extracting if the ranking can be trusted, and the two fields that
   // say whether it can are the two that get skipped. Furniture and repetition are the measured
   // ways this goes wrong: a footer site-directory and a filter sidebar have both outscored the
   // actual results.
   page_study: (o) => {
-    const best = (o?.lists || [])[0];
+    const lists = o?.lists || [];
+    const best = lists[0];
     if (!best) {
-      return 'no repeating structure was found, so list_extract has nothing to walk. '
-        + 'page_html selector:"body" depth:2 to read the page\'s shape, then page_read the part '
-        + 'you want.';
+      return 'no repeating structure was found, so list_extract has nothing to walk — and if what you want '
+        + 'is not a list, stop looking for one. A name in a header is page_state path:"@dom(<css>)"; the '
+        + 'markup itself is path:"@html(body :: 2)"; a value on each of many pages is page_harvest. '
+        + 'Re-frame after the FIRST refusal, not the fifth.';
     }
-    if (best.looksLikeFurniture) {
-      return `the top candidate sits inside a ${(best.landmarks || []).join('/') || 'nav/footer'} `
+    const lines = [];
+    if (best.looksLikeFurniture && lists.length === 1) {
+      // Measured on shopee.com.br: one candidate, the footer, 5 rows, on a page holding 60 products.
+      lines.push('the ONLY candidate is furniture (a footer, nav or aside). That is not a page without a '
+        + 'list, it is a page read before its list rendered. Study it again in a moment, or read what the '
+        + 'page FETCHES with tab_here network:"*" instead of what it shows.');
+    } else if (best.looksLikeFurniture) {
+      lines.push(`the top candidate sits inside a ${(best.landmarks || []).join('/') || 'nav/footer'} `
         + 'landmark, which is what furniture looks like — check the lower-ranked candidates before '
-        + 'trusting it.';
-    }
-    // WHAT distinctness:1 ACTUALLY MEANS, learned the expensive way — twice.
-    //
-    // First I wrote this edge to say "every row points at the same place", which is FALSE: IMDb's
-    // 250 films, HN's 30 stories and Stack Overflow's 15 questions each resolve somewhere
-    // different, and all three reported distinctness 1. So I tightened the condition to require
-    // identical sample rows — and that would have silenced the hint on all three, removing a signal
-    // that three independent agents followed and were right to follow.
-    //
-    // The field does not mean "duplicate rows". It means THE ENGINE CANNOT TELL THE ROWS APART,
-    // which is the precise reason list_extract collapses fields on a layout like HN's paired
-    // .athing/.subtext rows. The signal was always real; only my description of it was wrong.
-    // Fixing the words, not the condition — a true statement about the measurement, and no claim
-    // about the page that the measurement does not support.
-    if (Number(best.distinctness) <= 1 && Number(best.rows) > 1) {
-      return `distinctness is ${best.distinctness} across ${best.rows} rows: the engine cannot tell `
+        + 'trusting it.');
+    } else if (Number(best.distinctness) <= 1 && Number(best.rows) > 1) {
+      // WHAT distinctness:1 ACTUALLY MEANS, learned the expensive way — twice.
+      //
+      // First this edge said "every row points at the same place", which is FALSE: IMDb's 250 films,
+      // HN's 30 stories and Stack Overflow's 15 questions each resolve somewhere different, and all
+      // three reported distinctness 1. Then the condition was tightened to require identical sample
+      // rows — which would have silenced the hint on all three, removing a signal that three
+      // independent agents followed and were right to follow.
+      //
+      // The field does not mean "duplicate rows". It means THE ENGINE CANNOT TELL THE ROWS APART,
+      // which is the precise reason list_extract collapses fields on a layout like HN's paired
+      // .athing/.subtext rows. The signal was always real; only the description of it was wrong.
+      lines.push(`distinctness is ${best.distinctness} across ${best.rows} rows: the engine cannot tell `
         + 'these rows apart, which is what makes list_extract collapse fields on layouts like this '
         + '(paired rows, rows whose links all look alike). It does NOT mean the rows are duplicates. '
-        + 'page_read with a precise selector returns what is really there; reach for list_extract '
-        + 'only if you have checked the rows are uniform.';
+        + 'page_state path:"@dom(<row css>)" returns what is really there; reach for list_extract only '
+        + 'if you have checked the rows are uniform.');
+    } else {
+      lines.push(`list_extract selector:"${best.selector}" for a table you can export, or page_state `
+        + `path:"@dom(<row css>)" for a single read of the ${best.rows} rows. If a run returns far fewer than `
+        + `${best.rows}, the rows are not uniform — @dom, not a bigger pages number.`);
     }
-    return `list_extract selector:"${best.selector}" for a table you can export, or page_read for `
-      + `a single read of the ${best.rows} rows. If a run returns far fewer than ${best.rows}, the `
-      + 'rows are not uniform — page_read or @dom, not a bigger pages number.';
-  },
-
-  // The single most expensive wrong turn available: pressing through a list whose rows already
-  // carry the URL. Measured at 23 servers of somebody else's browser time.
-  page_read: (o) => {
-    const rows = o?.rows || [];
-    if (!rows.length) return null;
-    const linked = rows.filter((r) => r && r.href).length;
-    if (linked >= Math.max(2, rows.length * 0.5)) {
-      return `${linked} of ${rows.length} rows carry an href — this is a WORK LIST, not something `
-        + 'to walk. Take the URLs and handle them directly; page_walk is for rows that can only be '
-        + 'pressed.';
+    // Measured on a live storefront: 13 buttons and no load-more at 10 rows; the same control
+    // appeared once the list was deep. A lazy list often renders its control only after the first
+    // batch fills, so an empty sweep at first paint is truthful and not final.
+    const cands = o?.growth?.candidates;
+    if (Array.isArray(cands) && !cands.length) {
+      lines.push('growth.candidates is empty: no load-more is on the page YET, which is not the same as '
+        + 'never. page_grow scroll:true, then study again, before concluding this list cannot grow.');
+    } else if (Array.isArray(cands) && cands.some((c) => c && c.verified === false)) {
+      lines.push('the growth candidates are guesses (verified:false): press one with page_grow {selector} to '
+        + 'find out whether it loads anything.');
     }
-    if (!linked) {
-      return 'no row carries an href, so pressing is the only way in — page_walk with back:true, '
-        + 'which returns the person\'s tab to where they left it.';
-    }
-    return null;
+    return lines;
   },
 
   // grew:false is honest and useless on its own; what to do about it depends on WHY.
-  page_grow: (o) => {
-    if (o?.grew) return null;
-    const moved = o?.scrolled && o.scrolled.from === o.scrolled.to && o.scrolled.max > 0;
-    if (moved) {
-      return 'the pane did not move at all (from === to) even though it can scroll. Some apps load '
-        + 'nothing from an assignment to scrollTop — use page_state path:"@collect(<row css> :: '
-        + '<hops>)", which drives the pane with real wheel and PageDown gestures.';
+  page_grow: (o, a) => {
+    const mode = String(a?.mode || 'grow');
+    const lines = [];
+    if (mode === 'walk') {
+      const rows = o?.rows || [];
+      if (a?.fill !== undefined && a?.fill !== null) {
+        if (o?.value !== undefined && String(o.value) !== String(a.fill)) {
+          lines.push('the field now holds something OTHER than what was sent — a masked or length-capped '
+            + 'input does that. Read `value` before relying on it.');
+        }
+        if (!o?.error) lines.push('filling does not submit: press the form\'s own control next, with mode:"walk" and `text`.');
+        return lines;
+      }
+      if (a?.choose && o?.changed === false) {
+        lines.push('changed:false — the option was set and the page looked identical afterwards: a slow '
+          + 're-render (raise waitMs) or a widget that ignores the event. Do not report the rows as '
+          + 're-sorted; pass `read` with the row selector and compare the rows themselves.');
+      }
+      // A walk that pressed the wrong thing reports it plainly, and the fix is always the selector.
+      if (rows.length && Number(o?.moved) === 0 && !a?.choose) {
+        lines.push('moved:0 on every row — the selector matched a wrapper, not the control. page_state '
+          + 'path:"@html(<css> :: 2)" on one of them shows what actually carries the click (often a child '
+          + 'with a role, an href or a data-* id).');
+      }
+      // `next` here is the walk's own PAGINATION CURSOR, not a hint — the two are deliberately
+      // different fields. See the attach site in index.mjs.
+      if (o?.next != null && rows.length) {
+        lines.push(`stopped at ${o.next} of ${o.total}; pass offset:${o.next} to continue rather than start over.`);
+      }
+      return lines;
     }
-    return 'nothing grew. If this is a conversation or a feed, history loads UPWARD — pass '
-      + 'direction:"up", or jump to the boundary (a trailing /0, ?page=1, sort=oldest) and collect '
-      + 'downward from there.';
+    if (mode !== 'grow') return lines;
+    if (a?.network && !o?.error) {
+      lines.push('feed mode holds what each scroll FETCHED. The first screenful is usually already in the '
+        + 'document and NOT in this capture: read that from the page and treat these rows as what follows.');
+    }
+    const dup = o?.duplicates;
+    if (dup && Number(dup.loopingPct) >= LOOPING_PCT_MIN) {
+      lines.push(`loopingPct:${dup.loopingPct} — the list is re-serving rows it already gave. uniqueGained `
+        + `(${dup.uniqueGained ?? '?'}), not domRows, is what a table will contain; a feed can grow forever `
+        + 'without adding a row you do not already hold. This is the end of the useful list.');
+    }
+    if (o?.grew) return lines;
+    const stuck = o?.scrolled && o.scrolled.from === o.scrolled.to && o.scrolled.max > 0;
+    if (stuck) {
+      lines.push('the pane did not move at all (from === to) even though it can scroll. Some apps load '
+        + 'nothing from an assignment to scrollTop — use page_state path:"@collect(<row css> :: '
+        + '<hops>)", which drives the pane with real wheel and PageDown gestures.');
+    } else if (!pageLines(o).length) {
+      lines.push('nothing grew. If this is a conversation or a feed, history loads UPWARD — pass '
+        + 'direction:"up", or jump to the boundary (a trailing /0, ?page=1, sort=oldest) and collect '
+        + 'downward from there. On a page with several panes, name the container with `selector` and '
+        + 'scroll:true: scrolling the window moves the pane you did not mean.');
+    }
+    if (o?.containerRows && Number(o?.recordLinks?.after ?? o?.recordLinks) === 0) {
+      lines.push('these rows carry no links, so recordLinks reads 0 forever: containerRows is the growth '
+        + 'signal to trust here.');
+    }
+    return lines;
+  },
+
+  page_state: (o, a) => {
+    const p = String(a?.path || '').trim();
+    const lines = [];
+    // A harvest that ran out of budget looks exactly like one that finished.
+    if (o?.ended === 'capped') {
+      lines.push('ended:capped means the hops ran out and THERE IS MORE — raise hops, or continue from '
+        + 'where it stopped. Do not report this as the end of the list.');
+    }
+    if (o?.ended === 'limit') lines.push('ended:limit — the row cap was hit, not the end of the list. `limit` sets how far to go; `reply` only caps what comes back.');
+    if (typeof o?.hidden === 'number' && o.hidden > 0) {
+      lines.push(`hidden:${o.hidden} — the page is holding more than the selector matched. A collapsed `
+        + 'section renders no children at all, and scrolling cannot reveal what is not there: '
+        + '@map(<scope>) expands disclosures first.');
+    }
+    if (Number(o?.redacted) > 0) {
+      lines.push(`${o.redacted} value${o.redacted === 1 ? '' : 's'} came back masked. The mask is keyed on the NAME, `
+        + 'so it over-catches: a field called "author" matches the auth prefix. If a plainly harmless field '
+        + 'reads as redacted, name the leaf ("...author.username") and it returns — do not report the data '
+        + 'as unavailable. Real credentials stay masked whatever you pass.');
+    }
+    if (/^@net\(/i.test(p)) {
+      const arg = p.slice(5, -1).trim();
+      if (arg && arg.toLowerCase() !== 'stop' && !o?.error) {
+        lines.push('the watch is running and OUTLIVES this call, but it cannot see requests the page already '
+          + 'made. Now do the thing that causes the request (any tool), then poll with path:"@net()"; end '
+          + 'with "@net(stop)" — until then a debugger bar stays on the tab and DevTools cannot open on it.'
+          + (arg === '*' ? ' "*" keeps EVERY response, images and fonts included; on a heavy app name a filter instead.' : ''));
+      } else if (!arg) {
+        const named = Array.isArray(o?.network) ? o.network.length : 0;
+        const shaped = Array.isArray(o?.responses) ? o.responses.length : 0;
+        if (named > shaped) {
+          lines.push(`${named} responses arrived since the last poll and ${shaped} had a body worth shaping. `
+            + '`responses` carry the $. paths to hand to page_harvest {network} or page_grow {network, rows}; '
+            + '`network` names the rest; `kinds` counts them by type. To read one specific body, name its url: '
+            + '"@net(<substring>)". A poll CONSUMES what it reports.');
+        }
+      }
+    }
+    // The single most expensive wrong turn available: pressing through a list whose rows already
+    // carry the URL. Measured at 23 servers of somebody else's browser time.
+    if (/^@dom\(/i.test(p) && Array.isArray(o?.rows) && o.rows.length) {
+      const linked = o.rows.filter((r) => r && r.href).length;
+      if (linked >= Math.max(2, o.rows.length * 0.5)) {
+        lines.push(`${linked} of ${o.rows.length} rows carry an href — this is a WORK LIST, not something to `
+          + 'press through. For the same fields off each, that is ONE page_harvest {urls} or {links} call.');
+      } else if (!linked && o.rows.length > 3) {
+        lines.push('no row carries an href, so pressing is the only way in — page_grow mode:"walk" with '
+          + 'back:true, which returns the person\'s tab to where they left it.');
+      }
+      if (o.rows.length >= PSEUDO_ROWS_FILE_HINT) {
+        lines.push('rows from a pseudo-path exist in this reply only: they carry no resultId, so results get '
+          + 'and export cannot reach them. If the person needs a file, list_extract {selector} is the route.');
+      }
+    }
+    return lines;
   },
 
   // The failure that does not look like one: a run that "succeeded" with a fraction of the rows.
   list_extract: (o) => {
     if (o?.runId) return null;              // still starting; nothing measured yet
-    const got = Number(o?.rows) || 0;
-    const seen = Number(o?.rowsOnPage) || 0;
-    if (seen > 3 && got > 0 && got < seen / 2) {
-      return `${got} rows came back from a page showing about ${seen} — that gap means the rows are `
-        + 'not uniform, not that the list is short. page_read on the container returns what is '
-        + 'actually there; more pages will not help.';
-    }
-    return null;
+    return shortRunLines(o);
   },
 
-  // A walk that pressed the wrong thing reports it plainly, and the fix is always the selector.
-  page_walk: (o) => {
-    const rows = o?.rows || [];
-    if (rows.length && Number(o?.moved) === 0) {
-      return 'moved:false on every row — the selector matched a wrapper, not the control. '
-        + 'page_html on one of them to find what actually carries the click (often a child with '
-        + 'data-list-item-id, a role, or an href).';
+  page_harvest: (o, a) => {
+    if (o?.runId && !o?.resultId) {
+      return 'running in the background. Poll results {action:"status", runId} every 20-30 s and relay the '
+        + 'percent — silence is indistinguishable from a hang. results {action:"stop", runId} ends it and '
+        + 'keeps what was read.';
     }
-    // `next` here is page_walk's own PAGINATION CURSOR, not a hint — the two are deliberately
-    // different fields now. See the attach site in index.mjs.
-    if (o?.next != null && rows.length) {
-      return `stopped at ${o.next} of ${o.total}; pass offset:${o.next} to continue.`;
+    const lines = harvestLines(o);
+    if (!a?.background && Number(o?.pages) > BLOCKING_PAGES_MAX) {
+      lines.push(`that was ${o.pages} pages in one blocking call. Over about ${BLOCKING_PAGES_MAX}, pass background:true so the `
+        + 'run can be polled, reported on and stopped.');
     }
-    return null;
+    return lines;
   },
 
-  // A harvest that ran out of budget looks exactly like one that finished.
-  page_state: (o) => {
-    if (o?.ended === 'capped') {
-      return 'ended:capped means the hops ran out and THERE IS MORE — raise hops, or continue from '
-        + 'where it stopped. Do not report this as the end of the list.';
+  results: (o, a) => {
+    const action = String(a?.action || '');
+    if (action === 'status') {
+      if (o?.state === 'waiting_for_user') {
+        return 'waiting_for_user — the SITE asked the person to prove they are human. Tell them and wait; '
+          + 'the run carries on by itself once it clears. Do NOT retry and do NOT start another run: '
+          + 'retrying is what turns a check into a block.';
+      }
+      if (o?.state === 'done') return [...shortRunLines(o), ...(o?.fields ? harvestLines(o) : [])];
+      return null;
     }
-    if (o?.ended === 'limit') return 'ended:limit — the row cap was hit, not the end of the list.';
-    if (typeof o?.hidden === 'number' && o.hidden > 0) {
-      return `hidden:${o.hidden} — the page is holding more than the selector matched. A collapsed `
-        + 'section renders no children at all, and scrolling cannot reveal what is not there: '
-        + '@map(<scope>) expands disclosures first.';
+    if (action === 'get' && o?.truncated && Number(o?.more) > MORE_ROWS_SAVE_HINT) {
+      return `${o.more} rows remain. Paging them through this conversation is the expensive route: results `
+        + '{action:"get", resultId, saveTo:"/absolute/path.csv"} writes every row to a file the server '
+        + 'creates, and you read it with your own tools.';
+    }
+    if (action === 'download' && Number(o?.resolvedX) > 0) {
+      return `resolvedX:${o.resolvedX} — that many X videos were re-resolved through X\'s syndication API before `
+        + 'saving, because a captured X url is often session-bound or one small fragment. The file that '
+        + 'landed is not necessarily the url the scan reported.';
+    }
+    if (action === 'merge' && Number(o?.unkeyed) > 0) {
+      return `unkeyed:${o.unkeyed} — those rows had no value in the key column, so they were kept as they `
+        + 'were and could not be matched across passes. A key that is often empty is the wrong key.';
     }
     return null;
   },
 };
 
-export { TOOLS, OPS, SLOW, READ_ONLY, NEXT, timeoutFor };
+// A walk that ended with far fewer rows than the page showed. Measured: an icon rail of 23 entries,
+// which page_study itself counted as 23 rows, came back as ONE row; a chat log came back as
+// sentence fragments with no author and no timestamp. Neither is a broken page — list_extract must
+// first agree that something is a list, and when it disagrees it does not refuse, it returns a little.
+function shortRunLines(o) {
+  const got = Number(o?.rows) || 0;
+  const seen = Number(o?.rowsOnPage) || 0;
+  if (seen > 3 && got > 0 && got < seen / 2) {
+    return [`${got} rows came back from a page showing about ${seen} — that gap means the rows are `
+      + 'not uniform (icons, message groups, date dividers), not that the list is short. page_state '
+      + 'path:"@dom(<container css>)" returns what is actually there; more pages will not help.'];
+  }
+  return [];
+}
+
+// EVERY EDGE SEES THE ENVIRONMENT FIRST. The page header and the pager's near misses can arrive on
+// any reply that read a page, so they are added around the table rather than repeated in each entry
+// — an op added later gets them without anyone remembering to ask. One string out, lines joined,
+// because `hint` is one field; null when every source was silent.
+const flat = (v) => (Array.isArray(v) ? v : [v]).filter((x) => typeof x === 'string' && x);
+
+// WHICH BROWSER ANSWERED, WHEN IT WAS NOT THE ONE ASKED. index.mjs re-runs an op in the other browser
+// when the reply says this one could not (a lane that did not paint, a page that wanted the person's
+// login) and marks the reply `switched: {from, to, why, tabId?}`. The one fact a caller must not miss
+// is that the ids in that reply belong to the browser that answered — a companion tabId means nothing
+// in the person's Chrome — so this line says so, first, and only when it is true.
+function switchedLines(o) {
+  const s = o?.switched;
+  if (!s || typeof s !== 'object' || !s.to) return [];
+  const who = s.to === 'companion' ? 'the headless companion (no login, no banner)' : 'the person\'s own Chrome';
+  return [`switched: this reply came from ${who}, not the ${s.from || 'browser'} asked, because ${s.why || 'it could not answer there'}. `
+    + `Every tabId, runId or resultId in it${s.tabId != null ? ` (tab ${s.tabId})` : ''} belongs to the ${s.to} and routes there on its own.`];
+}
+
+const NEXT = Object.fromEntries(TOOLS.map((t) => [t.name, (out, args) => {
+  // A switched reply that already carries the extension's hint keeps it, under the switch line —
+  // the extension measured the page and outranks this table; index.mjs only calls in here over an
+  // existing hint when `switched` is set.
+  if (out?.switched && typeof out?.hint === 'string' && out.hint) return [...switchedLines(out), out.hint].join('\n');
+  const lines = [...switchedLines(out), ...pageLines(out), ...flat(EDGES[t.name]?.(out, args || {})), ...pagerLines(out)];
+  return lines.length ? lines.join('\n') : null;
+}]));
+
+// --- answered here, without asking the browser -----------------------------------------------------
+// `PRE` runs before anything else in index.mjs `call()`. It returns null (carry on), {refuse} (an
+// error the model can read) or {reply} (the whole answer). Three things live behind it, and they
+// share a door so index.mjs — mirrored byte-for-byte into the public package — grew one call site
+// instead of three.
+
+// 1. A PARAMETER THE TOOL DOES NOT HAVE. Every schema above says additionalProperties:false and
+//    nothing enforced it: arguments went straight to the browser, the op destructured the names it
+//    knew, and the rest fell on the floor. `list_extract {page: 3}` — one letter short — ran an
+//    UNBOUNDED walk and reported success. The message is chrome-devtools-mcp's shape
+//    (ToolHandler.ts:78-92): the fact, the accepted names, one imperative.
+const near = (bad, names) => {
+  const b = bad.toLowerCase();
+  return names.find((n) => n.toLowerCase() === b)
+    || names.find((n) => n.toLowerCase().startsWith(b) || b.startsWith(n.toLowerCase()))
+    || names.find((n) => n.length > 3 && (n.toLowerCase().includes(b) || b.includes(n.toLowerCase())))
+    || null;
+};
+function unknownArgs(name, args) {
+  const tool = TOOLS.find((t) => t.name === name);
+  if (!tool || !args || typeof args !== 'object' || Array.isArray(args)) return null;
+  const names = Object.keys(tool.inputSchema.properties || {});
+  const bad = Object.keys(args).filter((k) => !names.includes(k));
+  if (!bad.length) return null;
+  const guess = bad.map((k) => [k, near(k, names)]).filter(([, n]) => n);
+  return `Unknown argument${bad.length === 1 ? '' : 's'} for tool "${name}": ${bad.map((k) => `"${k}"`).join(', ')}. `
+    + (names.length ? `Expected arguments: ${names.map((n) => `"${n}"`).join(', ')}. ` : 'It takes no arguments. ')
+    + (guess.length ? `${guess.map(([k, n]) => `Did you mean "${n}" for "${k}"?`).join(' ')} ` : '')
+    + 'Nothing was sent to the browser. Fix the name and retry.';
+}
+
+// 2. `results {saveTo}` — THE SERVER WRITES THE TABLE.
+//
+// `get` pages rows THROUGH the model (the 80%-of-the-run cost measured on the 250-film scrape) and
+// `export` writes into Downloads under a name the browser picks, a directory an agent's file tools
+// often cannot open. Both reference servers take an explicit path on their big readers instead. The
+// rows are pulled from the extension's own `results.get` a page at a time and appended as they
+// arrive, so a 60,000-row table is never held whole here and never enters one reply.
+//
+// WHERE IT MAY WRITE is a convenience guard, not a security boundary — the same honesty Playwright
+// puts on its own file roots. Absolute only, because this process's cwd is not the agent's. Under
+// the person's home or a temp directory only, judged on the REAL path of the deepest directory that
+// exists, so neither `..` nor a symlink climbs out. Not under a dot-directory in home (~/.ssh,
+// ~/.config, an agent's own settings), because what gets written is page content and a page can be
+// hostile. Never over an existing file: `wx` makes the check and the create one step.
+const SAVE_PAGE = 1000;                       // the extension's own ceiling for one results.get
+const inside = (dir, p) => p === dir || p.startsWith(dir.endsWith(path.sep) ? dir : dir + path.sep);
+const real = (p) => { try { return fs.realpathSync(p); } catch (_) { return null; } };
+function saveTarget(saveTo) {
+  const raw = String(saveTo || '');
+  if (!path.isAbsolute(raw)) {
+    return { refuse: `saveTo must be an ABSOLUTE path — got "${raw.slice(0, 120)}". This server's working `
+      + 'directory is not yours, so a relative path would land somewhere you cannot find.' };
+  }
+  const want = path.normalize(raw);
+  const ext = path.extname(want).toLowerCase();
+  if (ext !== '.csv' && ext !== '.json') {
+    return { refuse: `saveTo must end in .csv or .json — got "${ext || 'no extension'}". The extension picks the format.` };
+  }
+  // The deepest ancestor that exists decides where this really is; the rest is ours to create.
+  let at = path.dirname(want);
+  while (!fs.existsSync(at) && path.dirname(at) !== at) at = path.dirname(at);
+  const resolved = path.join(real(at) || at, path.relative(at, want));
+  const home = real(os.homedir()) || os.homedir();
+  const temps = [...new Set([os.tmpdir(), '/tmp', '/private/tmp'].map((d) => real(d)).filter(Boolean))];
+  const inHome = inside(home, resolved);
+  if (!inHome && !temps.some((d) => inside(d, resolved))) {
+    return { refuse: `saveTo must be under the person's home (${home}) or a temp directory (${temps.join(', ')}). `
+      + `"${resolved}" is neither.` };
+  }
+  if (inHome) {
+    const dot = path.relative(home, resolved).split(path.sep).slice(0, -1).find((seg) => seg.startsWith('.') && seg !== '.holoscrape');
+    if (dot) {
+      return { refuse: `saveTo will not write inside "${dot}" under home — dot-directories hold credentials and `
+        + 'tool configuration, and what is written here is page content. Choose an ordinary folder.' };
+    }
+  }
+  if (fs.existsSync(resolved)) {
+    return { refuse: `${resolved} already exists and saveTo never overwrites. Choose a new name.` };
+  }
+  // Written at the resolved path, REPORTED under the name the caller gave. On macOS /var and /tmp are
+  // themselves symlinks, so the two differ on almost every temp path; both open the same file, and an
+  // agent that gets back a string it never sent has to work out whether it is the same one.
+  return { file: resolved, shown: want, ext };
+}
+
+// Same file the extension's own export writes (background.js `toCsv`): BOM so Excel reads UTF-8,
+// CRLF records, a dash for an empty cell so "this business publishes no email" cannot be mistaken
+// for "the email pass never ran". JSON keeps the empty string — a program reads that one.
+const csvQuote = (s) => (/[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s);
+const csvCell = (v) => { const s = v === null || v === undefined ? '' : String(v); return csvQuote(s.trim() ? s : '-'); };
+
+async function saveRows(args, ask) {
+  const target = saveTarget(args.saveTo);
+  if (target.refuse) return target;
+  if (!args.resultId) return { refuse: 'saveTo needs a resultId — the table to write.' };
+  const { file, shown, ext } = target;
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  let fd = null;
+  try {
+    fd = fs.openSync(file, 'wx');
+    let offset = 0; let rows = 0; let columns = null;
+    for (;;) {
+      const page = await ask('results.get', { resultId: args.resultId, limit: SAVE_PAGE, offset,
+        ...(Array.isArray(args.columns) && args.columns.length ? { columns: args.columns } : {}) }, SAVE_ASK_MS);
+      const got = Array.isArray(page?.rows) ? page.rows : [];
+      if (!columns) {
+        columns = Array.isArray(page?.columns) && page.columns.length ? page.columns : Object.keys(got[0] || {});
+        fs.writeSync(fd, ext === '.csv' ? `\uFEFF${columns.map((c) => csvQuote(String(c ?? ''))).join(',')}\r\n` : '[');
+      }
+      let chunk = '';
+      for (const r of got) {
+        chunk += ext === '.csv'
+          ? `${columns.map((c) => csvCell(r?.[c])).join(',')}\r\n`
+          : `${rows ? ',' : ''}\n${JSON.stringify(r)}`;
+        rows++;
+      }
+      if (chunk) fs.writeSync(fd, chunk);
+      // The extension says when it is finished; a page that came back empty is the backstop, so a
+      // `truncated` that never turns false cannot spin here forever.
+      if (!page?.truncated || !got.length) break;
+      offset = Number.isFinite(page.nextOffset) ? page.nextOffset : offset + got.length;
+    }
+    if (ext === '.json') fs.writeSync(fd, rows ? '\n]\n' : ']\n');
+    fs.closeSync(fd); fd = null;
+    return { reply: { path: shown, rows, bytes: fs.statSync(file).size, columns, format: ext.slice(1) } };
+  } catch (e) {
+    // HALF A TABLE UNDER THE WHOLE TABLE'S NAME IS WORSE THAN NO FILE. A short answer that looks
+    // complete is the failure this project keeps paying for, so a run that dies part-way removes
+    // what it wrote and says so.
+    if (fd !== null) { try { fs.closeSync(fd); } catch (_) {} try { fs.unlinkSync(file); } catch (_) {} }
+    if (e?.code === 'EEXIST') return { refuse: `${file} already exists and saveTo never overwrites. Choose a new name.` };
+    return { refuse: `${e?.message || e}\n\nNothing was saved: ${file} was removed rather than left holding part of the table.` };
+  }
+}
+
+async function PRE(name, args, ask) {
+  const bad = unknownArgs(name, args);
+  if (bad) return { refuse: bad };
+  if (name !== 'results') return null;
+  const action = String(args?.action || '');
+  // 3. THE GUIDE. No browser op exists for it and none is needed: it must answer with Chrome closed,
+  //    because "nothing is connected" is one of the things it explains.
+  if (action === 'guide') return { reply: guide(args?.topic) };
+  if (args?.saveTo !== undefined && args?.saveTo !== null) {
+    if (action !== 'get' && action !== 'export') {
+      return { refuse: `saveTo writes a table's rows, so it goes with action "get" or "export" — not "${action}".` };
+    }
+    return saveRows(args, ask);
+  }
+  return null;
+}
+
+export { TOOLS, OPS, SLOW, READ_ONLY, NEXT, LOCAL_ACTIONS, PRE, timeoutFor };

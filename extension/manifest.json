@@ -1,0 +1,68 @@
+{
+  "manifest_version": 3,
+  "name": "HoloScrape \u2014 turn any list into a table",
+  "description": "Reads the list on a page \u2014 search results, listings, directories \u2014 and hands you the rows as a table. Export to CSV, or let an AI agent work with them.",
+  "version": "0.3.0",
+  "action": {
+    "default_title": "HoloScrape \u2014 read this page's list",
+    "default_icon": {
+      "16": "public/icon-16.png",
+      "32": "public/icon-32.png",
+      "48": "public/icon-48.png",
+      "128": "public/icon-128.png"
+    }
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://www.google.com/maps/*",
+        "*://maps.google.com/*",
+        "*://www.google.co.id/maps/*",
+        "*://www.google.co.uk/maps/*",
+        "*://www.google.com.au/maps/*",
+        "*://www.google.ca/maps/*",
+        "*://www.google.de/maps/*",
+        "*://www.google.fr/maps/*",
+        "*://www.google.es/maps/*",
+        "*://www.google.it/maps/*",
+        "*://www.google.nl/maps/*",
+        "*://www.google.com.br/maps/*",
+        "*://www.google.co.in/maps/*",
+        "*://www.google.com.mx/maps/*",
+        "*://www.google.com.tr/maps/*"
+      ],
+      "js": [
+        "raf.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": false
+    }
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "permissions": [
+    "scripting",
+    "storage",
+    "alarms",
+    "sidePanel",
+    "downloads",
+    "debugger",
+    "offscreen",
+    "unlimitedStorage"
+  ],
+  "icons": {
+    "16": "public/icon-16.png",
+    "32": "public/icon-32.png",
+    "48": "public/icon-48.png",
+    "128": "public/icon-128.png"
+  },
+  "host_permissions": [
+    "<all_urls>"
+  ]
+}

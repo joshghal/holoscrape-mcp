@@ -1,0 +1,1401 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  /* Bundled, not fetched: an extension page has no business reaching a CDN for
+     a font, and a local file also works offline and on first paint. Latin subset,
+     32KB. Licence in public/font/LICENSE.txt. */
+  @font-face{
+    font-family:"Roboto Mono";
+    src:url("public/font/roboto-mono.woff2") format("woff2");
+    font-weight:400 500;font-style:normal;font-display:swap;
+  }
+  /* Rules for this file live in DESIGN.md. The short version: amber is the only
+     accent and it means "came back"; three radii by role; borders only on things
+     that float or open; icons are SVG, never glyphs; density is set per surface. */
+  :root{
+    color-scheme:dark;
+    --ground:#061726; --raise:#0a2540; --sunk:#04101c;
+    --ink:#eef4fb; --ink-2:#8fa8c4; --ink-3:#5d789a;
+    --signal:#ffb648; --signal-2:#ffcf5e;
+    --hair:rgba(255,255,255,.055); --hair-2:rgba(255,255,255,.10);
+    --fill:rgba(255,255,255,.05); --fill-2:rgba(255,255,255,.09);
+    --r-1:3px; --r-2:5px; --r-3:10px;
+    --mono:"Roboto Mono",ui-monospace,"SF Mono",Menlo,monospace;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0;background:var(--ground);color:var(--ink);position:relative;isolation:isolate;
+    font:400 14px/1.5 "Helvetica Neue",-apple-system,BlinkMacSystemFont,Inter,sans-serif;
+    -webkit-font-smoothing:antialiased;min-height:100vh;
+  }
+  /* The silk field. Kept: it is the one thing here nothing else has. Data colours
+     only — they never touch a control. */
+  body::before{
+    content:"";position:fixed;inset:-30% -25% auto -25%;height:88vh;z-index:-2;
+    background:
+      radial-gradient(46% 34% at 78% 6%,rgba(255,207,94,.24),transparent 70%),
+      radial-gradient(50% 40% at 60% 2%,rgba(251,118,250,.24),transparent 72%),
+      radial-gradient(60% 46% at 26% 0%,rgba(114,50,241,.30),transparent 74%),
+      radial-gradient(44% 40% at 4% 22%,rgba(83,58,253,.20),transparent 72%);
+    filter:blur(26px);animation:drift 26s ease-in-out infinite alternate;
+    mask-image:linear-gradient(180deg,#000 0 30%,transparent 88%);
+  }
+  @keyframes drift{to{transform:translate3d(-4%,2%,0) scale(1.1)}}
+  body::after{
+    content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;
+    background:repeating-linear-gradient(64deg,rgba(255,255,255,.028) 0 1px,rgba(255,255,255,0) 1px 7px);
+    mask-image:linear-gradient(180deg,#000 0,transparent 55%);
+  }
+
+  svg{display:block;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
+
+  /* --- masthead ----------------------------------------------------------- */
+  .top{display:flex;align-items:center;gap:8px;height:44px;padding:0 14px;border-bottom:1px solid var(--hair)}
+  .mark{font-size:15px;font-weight:300;letter-spacing:-.02em;flex:1;display:flex;align-items:center;gap:8px}
+  .mark img{width:26px;height:26px;flex:none;display:block}
+  .mark i{font-style:normal;font-weight:500}
+  /* Reads as the second half of the number's sentence — "72 / on corp.kaltura.com"
+     — so the host is set in the body face and only the host itself is mono. */
+  .where{display:flex;align-items:center;gap:7px;margin-top:7px;font-size:14px;
+         color:var(--ink-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .where .h{font-family:var(--mono);color:var(--ink);overflow:hidden;text-overflow:ellipsis}
+  .where .pre{color:var(--ink-3);flex:0 0 auto}
+  /* Two facts about the site, set apart from its name. Nothing is shown for an
+     ordinary unknown page: a badge on every page trains you to ignore it. */
+  .tag{flex:0 0 auto;margin-left:2px;padding:2px 7px;border-radius:999px;
+       font-size:11px;letter-spacing:.04em;text-transform:uppercase;font-family:var(--mono)}
+  .tag.ok{background:rgba(120,220,160,.12);color:#7fd7a4}
+  .tag.warn{background:rgba(255,182,72,.14);color:var(--signal)}
+  .thin{margin:9px 0 0;padding:9px 11px;border-radius:var(--r-2);
+        background:rgba(255,182,72,.07);border:1px solid rgba(255,182,72,.20);
+        font-size:12.5px;line-height:1.55;color:var(--ink-2)}
+  .thin b{color:var(--signal);font-weight:500}
+  /* Same object as `.thin` — both qualify what the scan below is about to do, and two different
+     warning shapes in one column would read as two different severities. */
+  /* Margin on BOTH sides. It shipped with `0 0` on the bottom and sat flush against the Deep
+     scan button, which read as one control with a label rather than a warning about one. */
+  .untested{margin:14px 0 10px;padding:11px 12px;border-radius:var(--r-2);
+        background:rgba(255,182,72,.07);border:1px solid rgba(255,182,72,.20);
+        font-size:12.5px;line-height:1.6;color:var(--ink-2)}
+  .untested b{color:var(--signal);font-weight:500}
+  /* Inline with the sentence it ends, not a button under it: the route is part of the advice,
+     and a separate block would make a two-line note look like a dialog again. */
+  .untested-go{display:inline-block;margin:6px 0 0;padding:0;border:0;background:none;font:inherit;
+        color:var(--signal);text-decoration:underline;text-underline-offset:2px;cursor:pointer}
+  .untested-go:hover{color:var(--signal-2)}
+
+  /* One way in, so it is a target rather than a decoration: 32px, and the three
+     rules converge into a cross when the sheet is open. */
+  /* No slab behind it: at 32px the target is already there, and a filled
+     rounded box on hover is the one thing every toolbar icon does. */
+  .burger{width:32px;height:32px;margin-right:-6px;padding:0;display:grid;place-items:center;
+          background:none;border:0;border-radius:var(--r-2);color:var(--ink-3);cursor:pointer;
+          transition:color .14s}
+  .burger:hover{color:var(--ink)}
+  .burger svg{display:block;width:18px;height:18px;fill:none;stroke:currentColor;
+              stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+  .burger .bars,.burger .shut{transition:opacity .16s,transform .22s cubic-bezier(.4,0,.2,1);
+                              transform-origin:12px 12px}
+  .burger .bars path{transition:transform .22s cubic-bezier(.4,0,.2,1)}
+  /* The rules draw together as they fade, and the cross turns in as it arrives —
+     one gesture, so it does not read as two icons swapped. */
+  .burger .shut{opacity:0;transform:rotate(-45deg) scale(.8)}
+  .burger.open .bars{opacity:0}
+  .burger.open .bars path:first-child{transform:translateY(5px)}
+  .burger.open .bars path:last-child{transform:translateY(-5px)}
+  .burger.open .shut{opacity:1;transform:none}
+
+  /* --- drawer -------------------------------------------------------------- */
+  /* Opaque, and its own surface: the aurora belongs to the readout, and a sheet
+     you can read the count through is not a sheet. */
+  .drawer{position:fixed;inset:44px 0 0 0;z-index:30;background:var(--ground);
+          transform:translateX(10px);opacity:0;visibility:hidden;
+          transition:transform .2s cubic-bezier(.4,0,.2,1),opacity .16s,visibility .2s}
+  .drawer.open{transform:none;opacity:1;visibility:visible}
+
+  /* Menu and screens occupy the same box and cross-fade sideways, so going in
+     and coming back is one movement rather than a list that grows and shrinks. */
+  .menu,.screen{position:absolute;inset:0;overflow-y:auto;padding:10px 14px 26px;
+                transition:transform .22s cubic-bezier(.4,0,.2,1),opacity .16s,visibility .22s}
+  .menu.off{transform:translateX(-14px);opacity:0;visibility:hidden}
+  .screen{transform:translateX(16px);opacity:0;visibility:hidden}
+  .screen.on{transform:none;opacity:1;visibility:visible}
+  .screen[hidden]{display:block} /* hidden marks "not current"; the transition does the hiding */
+
+  /* A menu row in the same shape as a settings property row: name left, its
+     current value right. The value is the reason not to open it. */
+  /* Padded evenly, then pulled back out by the same amount: the label keeps the
+     column's left edge while the hover fill reaches past it. Padding on one side
+     only left the text against the edge of its own highlight. */
+  .mrow{display:flex;align-items:center;gap:10px;width:calc(100% + 20px);margin:0 -10px;
+        padding:13px 10px;
+        background:none;border:0;border-radius:var(--r-2);cursor:pointer;text-align:left;
+        font:inherit;font-size:15px;color:var(--ink);transition:background .12s}
+  .mrow + .mrow{border-top:1px solid var(--hair)}
+  .mrow:hover{background:var(--fill)}
+  .mt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .mv{font-family:var(--mono);font-size:12.5px;color:var(--ink-3);flex:0 0 auto}
+  .mc{width:14px;height:14px;flex:0 0 auto;fill:none;stroke:currentColor;stroke-width:1.7;
+      stroke-linecap:round;stroke-linejoin:round;color:var(--ink-3)}
+  .mrow:hover .mc{color:var(--ink-2)}
+
+  /* Screen header: back, title, and at most one action. */
+  .shead{display:flex;align-items:center;gap:4px;margin:0 0 14px;padding-bottom:11px;
+         border-bottom:1px solid var(--hair)}
+  .shead h2{flex:1;margin:0;font-size:16px;font-weight:400;letter-spacing:-.01em;color:var(--ink)}
+  .sback{width:28px;height:28px;margin-left:-6px;padding:0;display:grid;place-items:center;
+         background:none;border:0;border-radius:var(--r-2);color:var(--ink-3);cursor:pointer;
+         transition:color .14s,transform .14s}
+  .sback:hover{color:var(--ink);transform:translateX(-2px)}
+  .sback svg{display:block;width:17px;height:17px;fill:none;stroke:currentColor;
+             stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+  .sempty{margin:0;padding:14px 2px;font-size:13px;line-height:1.6;color:var(--ink-3)}
+  /* The screen IS the section now, so the old in-column separators would rule
+     against its own header. */
+  .drawer #hist{margin-top:0;padding-top:0;border-top:0}
+  .drawer .field:first-child{padding-top:0}
+  .led{width:5px;height:5px;border-radius:50%;background:#33506f;flex:0 0 auto}
+  .led.on{background:var(--signal);box-shadow:0 0 8px rgba(255,182,72,.8)}
+  .led.off{background:#5d3a52}
+
+  .pad{padding:16px 14px 22px}
+
+  /* --- states ------------------------------------------------------------- */
+  .blocked h2,.arm h2{font-size:17px;margin:0 0 8px;font-weight:300;letter-spacing:-.02em;line-height:1.35}
+  .blocked h2 span{color:var(--ink-2)}
+  .blocked p,.arm p,.findit p{margin:0 0 10px;color:var(--ink-2);line-height:1.6}
+  .bmark{width:26px;height:26px;border-radius:50%;display:grid;place-items:center;
+         border:1px solid var(--hair-2);color:var(--ink-2);margin-bottom:13px}
+  .bmark svg{width:13px;height:13px}
+  .bworks{padding-top:11px;border-top:1px solid var(--hair);color:var(--ink-3)!important}
+  .bworks b{color:var(--ink-2);font-weight:500}
+  .stale b{display:block;font-size:16px;font-weight:400;margin-bottom:6px;color:var(--signal);letter-spacing:-.01em}
+  .stale p{margin:0 0 13px;color:var(--ink-2);line-height:1.55}
+  .findit{display:flex;gap:11px;align-items:flex-start}
+  .findit img{border-radius:var(--r-2);flex:0 0 auto;margin-top:1px}
+  .findit b{color:var(--ink);font-weight:500}
+
+  /* --- the reading -------------------------------------------------------- */
+  /* Flat amber, not a gradient. A gradient on a number is decoration pretending
+     to be information. */
+  .count{font-size:36px;font-weight:300;line-height:1;letter-spacing:-.03em;
+         font-variant-numeric:tabular-nums;color:var(--signal)}
+  .count.zero{color:var(--ink-3)}
+  .count.bump{animation:bump .5s ease-out}
+  @keyframes bump{0%{transform:scale(1)}30%{transform:scale(1.07)}100%{transform:scale(1)}}
+  .caption{color:var(--ink-2);margin-top:5px;line-height:1.5}
+
+  /* Composition strip: the same ribbon the results window uses, so the two
+     surfaces read as one instrument. */
+  /* What share of the find is worth having. Three candy gradients across the full width
+     read as a progress bar — which this is not — and on a clean page it was one solid
+     violet block carrying no information at all. In palette, two pixels, and shown only
+     when something was actually set aside: kept is quiet, the discards are hatched and
+     amber-tinted so they read as subtracted rather than as a second achievement. */
+  .strip{display:flex;height:2px;margin-top:12px;overflow:hidden;background:var(--fill)}
+  .strip i{display:block;min-width:1px}
+  .strip i.a{background:var(--ink-3);opacity:.5}
+  .strip i.s{background:repeating-linear-gradient(-45deg,
+    var(--ink-3) 0 1px, transparent 1px 3px)}
+  .strip i.d{background:var(--signal);opacity:.4}
+
+  /* A page can carry more type buckets than fit the panel, so the row scrolls.
+     The fades are driven by scroll position, not painted on both ends always —
+     a fade over a start you have not left is a lie about there being more. */
+  .chips{
+    display:flex;gap:4px;margin-top:10px;flex-wrap:nowrap;overflow-x:auto;
+    scrollbar-width:none;overscroll-behavior-x:contain;
+    --fl:0px;--fr:0px;
+    -webkit-mask-image:linear-gradient(90deg,transparent 0,#000 var(--fl),#000 calc(100% - var(--fr)),transparent 100%);
+    mask-image:linear-gradient(90deg,transparent 0,#000 var(--fl),#000 calc(100% - var(--fr)),transparent 100%);
+  }
+  .chips::-webkit-scrollbar{display:none}
+  .chips.fl{--fl:24px}
+  .chips.fr{--fr:24px}
+  .chip{flex:0 0 auto;font-family:var(--mono);font-size:12px;padding:3px 7px;border-radius:var(--r-1);
+        color:var(--ink-2);background:var(--fill);white-space:nowrap}
+  .chip b{color:var(--ink);font-weight:500}
+
+  .sound{height:1px;margin:16px 0;background:var(--hair);position:relative;overflow:hidden}
+  .sound::after{content:"";position:absolute;inset:0;width:38%;
+    background:linear-gradient(90deg,transparent,var(--signal),transparent);
+    transform:translateX(-100%);opacity:0}
+  .sound.live::after{opacity:1;animation:sweep 1.15s linear infinite}
+  @keyframes sweep{to{transform:translateX(360%)}}
+
+  /* --- actions ------------------------------------------------------------ */
+  /* One primary, and it carries its own estimate rather than a second line of
+     marketing. Open results is a peer, not a lesser button — you want it after
+     every scan — so they share a row instead of stacking a big slab on a ghost. */
+  .acts{display:flex;gap:8px;align-items:stretch}
+  /* Two wrong answers before this one: a filled amber slab read as a caution
+     sign, and a filled white one was inert. This is a raised object instead of a
+     coloured rectangle — a lit top edge, a shadow under it, and amber only where
+     amber earns it: the lens of the icon and the glow it throws. */
+  .act{
+    flex:1;display:flex;align-items:center;gap:11px;min-width:0;height:52px;padding:0 14px 0 11px;
+    border:1px solid rgba(255,255,255,.13);border-radius:var(--r-2);cursor:pointer;
+    font:inherit;text-align:left;color:var(--ink);position:relative;overflow:hidden;
+    background:linear-gradient(180deg,#17304a,#0e2136);
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.10),
+               0 1px 1px rgba(0,0,0,.18),
+               0 4px 10px -4px rgba(0,0,0,.24),
+               0 14px 30px -10px rgba(255,182,72,.16),
+               0 28px 56px -20px rgba(255,182,72,.12);
+    transition:box-shadow .18s,border-color .18s,transform .07s,background .18s;
+  }
+  /* The sweep is the sounding line again — the same gesture the scan itself makes,
+     so the control and the process share one idea. */
+  .act::after{
+    content:"";position:absolute;top:0;bottom:0;width:34%;pointer-events:none;
+    background:linear-gradient(90deg,transparent,rgba(255,182,72,.16),transparent);
+    transform:translateX(-120%);
+  }
+  .act:hover:not(:disabled)::after{animation:pass .9s ease-out}
+  @keyframes pass{to{transform:translateX(380%)}}
+  .act:hover:not(:disabled){
+    background:linear-gradient(180deg,#1b3854,#12283f);
+    border-color:rgba(255,182,72,.42);
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.13),
+               0 1px 1px rgba(0,0,0,.18),
+               0 6px 14px -5px rgba(0,0,0,.26),
+               0 18px 38px -12px rgba(255,182,72,.26),
+               0 34px 66px -22px rgba(255,182,72,.18);
+  }
+  .act:active:not(:disabled){transform:translateY(1px);
+    box-shadow:inset 0 1px 3px rgba(0,0,0,.30),0 2px 8px -4px rgba(0,0,0,.20)}
+  .act:disabled{background:var(--fill);border-color:transparent;color:var(--ink-3);
+                cursor:default;box-shadow:none}
+  /* The focal point of the whole panel, concentrated into one small solid shape
+     rather than spread across a large one. A saturated amber disc at 30px reads
+     from across the room; the same amber across a 300px rectangle read as a
+     warning label. Attention comes from contrast, not from area. */
+  .act .ico{flex:0 0 auto;position:relative;width:30px;height:30px;border-radius:50%;
+            display:grid;place-items:center;color:var(--signal-2);
+            background:radial-gradient(circle at 50% 30%,rgba(255,182,72,.22),rgba(255,182,72,.06));
+            box-shadow:inset 0 0 0 1px rgba(255,182,72,.45),
+                       inset 0 1px 0 rgba(255,207,94,.35),
+                       0 0 18px -2px rgba(255,182,72,.28)}
+  .act .ico svg{width:15px;height:15px;stroke-width:1.9}
+  .act:disabled .ico{color:var(--ink-3);background:var(--fill);box-shadow:none}
+
+  /* Armed = the passive read already found things this scan could open. The
+     button only campaigns for attention when there is something to get. */
+  .act.armed{border-color:rgba(255,182,72,.5)}
+  .act.armed .ico::after{
+    content:"";position:absolute;inset:-4px;border-radius:50%;
+    border:1px solid rgba(255,182,72,.6);animation:ping 2.4s ease-out infinite;
+  }
+  @keyframes ping{
+    0%{transform:scale(.85);opacity:.9}
+    70%{transform:scale(1.5);opacity:0}
+    100%{transform:scale(1.5);opacity:0}
+  }
+  @media (prefers-reduced-motion:reduce){.act.armed .ico::after{animation:none;opacity:.5}}
+  @media (prefers-reduced-motion:reduce){.act:hover::after{animation:none}}
+  .act .lbl{position:relative;min-width:0;overflow:hidden}
+  .act b{display:block;font-size:14.5px;font-weight:500;letter-spacing:-.01em;line-height:1.25;
+         overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .act span{display:block;font-size:12px;opacity:.7;margin-top:1px;
+            overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  /* Two rows: the scan owns the full width; opening the result is the secondary act beneath it,
+     named in words — an icon alone left "what does this square do" to a hover. */
+  .acts.stack{flex-direction:column}
+  .acts.stack .act{flex:0 0 auto}
+  .ghost{
+    flex:0 0 auto;display:flex;align-items:center;justify-content:center;gap:8px;width:100%;height:40px;
+    padding:0 14px;border:1px solid var(--hair-2);border-radius:var(--r-2);cursor:pointer;
+    background:transparent;color:var(--ink-2);font:inherit;font-size:13px;font-weight:500;
+    transition:background .15s,border-color .15s,color .15s;
+  }
+  /* Scoped like .half[hidden]: .ghost sets display, which would otherwise out-rank the attribute. */
+  .ghost[hidden]{display:none}
+  .ghost svg{width:15px;height:15px;flex:none}
+  .ghost:hover{background:var(--fill);border-color:rgba(255,182,72,.5);color:var(--signal)}
+  :focus-visible{outline:2px solid var(--signal);outline-offset:2px}
+
+  /* --- coverage ----------------------------------------------------------- */
+  /* A property list, not a paragraph: label left, figure right on tabular
+     numerals, so the column of numbers can be read without reading the labels. */
+  /* One line, because it is one fact: what this page turned out to hold. It sits
+     where the old two-button block did and replaces all of it. */
+  /* Half a card: it covers the lower part of the panel and leaves the readout above
+     it visible, so the numbers already found stay on screen while a question is asked
+     about the next ones. Not a full-screen modal — a question about a list should not
+     hide the list. */
+  /* `display:flex` on a class outranks the `hidden` attribute's UA `display:none`, so
+     without this the sheet stays laid out while "hidden" — and being fixed and
+     full-panel, it swallowed every click in the panel. Deep scan looked disabled and
+     the automatic scan looked gone, because a transparent overlay was eating the
+     pointer. Third time this project has been bitten by exactly this; scoped rather
+     than global because `.screen[hidden]` deliberately keeps its display. */
+  .half[hidden]{display:none!important}
+  .half{
+    position:fixed;inset:0;z-index:40;display:flex;align-items:flex-end;
+    background:linear-gradient(to bottom,rgba(6,10,16,.30) 0%,rgba(6,10,16,.80) 42%);
+    animation:halfin .16s ease-out;
+  }
+  .halfin{
+    width:100%;background:#0d131c;border-top:1px solid rgba(255,182,72,.35);
+    border-radius:var(--r-2) var(--r-2) 0 0;padding:20px 18px 18px;
+    display:flex;flex-direction:column;gap:10px;
+    /* The sheet hugs its content. Attention comes from the dim behind it and the
+       weight of the type — 44vh of vacuum around a four-figure readout was empty
+       authority, not emphasis. */
+    box-shadow:0 -14px 34px rgba(0,0,0,.5);
+  }
+  /* Progress is an instrument strip, not an announcement: the title shrinks to an
+     eyebrow, the figures are the hero, Stop is a real button at their side. */
+  .half.live .hq{font-size:11px;letter-spacing:.14em;text-transform:uppercase;
+    color:var(--ink-2);display:flex;flex-direction:column;align-items:stretch;gap:11px}
+
+  /* --- the step rail ------------------------------------------------------
+     Adapted from React Bits' Stepper: circles joined by connectors, colour
+     advancing left to right, the step you are on emphasised and the ones behind
+     it turned to checks.
+
+     ADAPTED, and it could not have been copied even if that were wanted — this
+     extension has no dependencies and a CSP that forbids anything external, so
+     there is no React and no framer-motion in the building. What was taken is
+     the geometry (32px circles, a 2px connector at a 4px radius) and the one
+     idea that makes the component work: a rail whose colour advances answers
+     "how far through" with no number at all. The reference's brand purple
+     (rgb(82,39,255)) is gone; every lit thing here is this panel's own amber,
+     because a component still wearing somebody else's colour reads as a
+     component borrowed from another site rather than a part of this one.
+
+     WHY IT IS HERE. The sheet carried two devices that both looked like
+     progress and disagreed with each other — a 99% over a twenty-block bar
+     showing seven. They disagreed because they answer different questions and
+     nothing said which was which. The rail answers "which of the three am I
+     on". The meter below answers "is this step still moving". Neither was
+     deleted; they were told apart. */
+  /* THE LEDGER — three rows, one of them open.
+     A finished step is one grey line and a step that has not started is one grey line; only the
+     running one gets a surface, a figure and a meter. The card is therefore at its tallest for one
+     step at a time instead of carrying all three at full weight for the whole run. */
+  .half.live .hq.ledger{display:flex;flex-direction:column;align-items:stretch;gap:0;
+    font-size:12px;letter-spacing:0;text-transform:none;color:var(--ink-2)}
+  .lrow{display:flex;align-items:center;gap:10px;font-style:normal;padding:5px 0}
+  .lrow>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .lrow.done>span,.lrow.todo>span{font-size:12px;color:var(--ink-3)}
+  /* `--ink-3` on `--hair-2` measured 3.15:1 — below every legibility floor, on the one element
+     that says which step has not started yet. The step numbers are the whole point of the ledger. */
+  .ldot{display:grid;place-items:center;flex:0 0 auto;width:16px;height:16px;border-radius:50%;
+    background:var(--hair-2);color:var(--ink-2);font-size:9.5px;font-style:normal;
+    font-family:var(--mono);font-variant-numeric:tabular-nums;line-height:1}
+  .lrow.done .ldot{background:rgba(255,182,72,.22);color:var(--signal)}
+  .ldot svg{width:10px;height:10px;fill:none;stroke:currentColor;stroke-width:3;
+    stroke-linecap:round;stroke-linejoin:round}
+
+  /* The open row and the gauge are two elements painted as ONE panel: the gauge is written by a
+     different code path and moving it inside the row would have meant restructuring the sheet.
+     The negative margin closes `.halfin`'s gap so the seam does not show. */
+  /* NO BOX. The open step sits flat on the sheet, and this project's own rule is that a flat
+     surface gets neither a fill nor a border — only things that float or open earn one. Giving it
+     both produced a card inside a card inside a card, which is the generic look this file exists
+     to keep out. The amber rule alone says which step is live; it is the accent doing semantic
+     work, which is the only job the accent has. */
+  /* NO RULE DOWN THE SIDE. The amber dot already says which step is live, and a second amber
+     marker for the same fact is the decoration this file's own rules refuse. Removing it also
+     lets the figures sit on the sheet's own left edge instead of indented behind a bar. */
+  .half.live .hq.ledger .lrow.open{padding:3px 0 3px 0;gap:10px;margin-top:6px}
+  .half.live .hq.ledger .lrow.open .ldot{width:18px;height:18px;font-size:10.5px;
+    background:var(--signal);color:var(--sunk);font-weight:500}
+  .half.live .hq.ledger+#hsub{margin-top:-14px;padding:13px 0 4px 0}
+  @media (prefers-reduced-motion:reduce){.lrow.open{animation:none}}
+  /* Ease-out-quint. A ledger row is a fact arriving, not a thing dropped on a table —
+     the overshoot this used to carry made every count look like it had landed hard. */
+  .half.live .hq.ledger .lrow.open{animation:stepin .45s cubic-bezier(.22,1,.36,1) both}
+  .half.live .hrest{display:flex;flex-direction:column;align-items:stretch;gap:8px;margin:0;
+    font-size:12px;letter-spacing:0;text-transform:none}
+  .half.live .hrest:empty{display:none}
+
+  .half.live .hq .hline{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px}
+  .half.live .hq .hstep{flex:0 0 auto;color:var(--signal);font-weight:500;
+    font-size:10.5px;letter-spacing:.14em}
+  /* The phase name stops being an eyebrow. It changes three times inside step
+     one alone — "Reading the page", "Collecting files", "Reading the list" —
+     and at 11px uppercase it was the least legible true thing on the sheet. */
+  .half.live .hq .hwhat{flex:1 1 auto;min-width:0;color:var(--ink);
+    font-size:13.5px;letter-spacing:.01em;text-transform:none}
+  /* A TIP, set as one. It is advice for a smooth run, not a warning about a broken one — an
+     unfocused window was measured and changes nothing — so it is whispered, sits under the rail
+     where it is read before somebody walks away rather than after, and carries no icon that would
+     make it look like an alert. It does not appear once Stop has been pressed: there is nothing
+     left to protect by then. */
+  /* NO OPACITY ON TEXT. It read as the quiet way to say "quieter", and it makes the rendered
+     colour something no measurement of `color` can see — a dim token plus reduced opacity has
+     already measured 2.0:1 elsewhere in this codebase, which is invisible. This is 11px against
+     a 13.5px title and carries no rule of its own; that is enough to be subordinate without
+     lying to the contrast check. */
+  /* A BANNER, because whispered it was not read. It first shipped as a quiet 11px line under the
+     title and the user's answer was "the warning should be more visible" — which is the whole test
+     for a tip nobody acts on. It keeps the amber signal rather than a red alert colour: this is
+     advice for a smooth run, and an unfocused window was MEASURED to change nothing, so dressing
+     it as a failure would be a lie told loudly.
+     Text is `--ink`, not `--ink-2`: the line above it is the quiet one, and a banner whose words
+     are dimmer than the body it sits in is decoration. */
+  .half.live .htip{display:block;margin-top:-2px;padding:9px 11px;
+    font-size:12px;line-height:1.45;letter-spacing:.01em;text-transform:none;
+    color:var(--ink);background:rgba(255,182,72,.10);border-radius:var(--r-2)}
+  .half.live .halfin{padding:17px 18px 16px;gap:14px}
+  .half.live .hacts{margin-top:3px}
+  /* Stop earns its own line and a little more of it. It is the only way out of a run nobody is
+     watching, and on a card that now runs to three hundred pixels a small ghost control at the
+     bottom is the one thing that must not be hunted for. */
+  .half.live .hacts button.stop{padding:9px 18px 9px 13px;font-size:13px;border-radius:8px}
+  .half.live .hacts button.stop .sq{width:10px;height:10px}
+  /* Stop is the only thing on this sheet that is not a number, and the old ghost outline
+     made it read as a caption. It gets a filled well and a stop glyph so it is found by
+     shape, but stays muted — it is an escape hatch, not the point of the screen. */
+  /* Full width: the one way out of a run spans the sheet, so it is found without being looked for. */
+  .half.live .hacts button.stop{flex:1 1 auto;display:flex;align-items:center;justify-content:center;
+    gap:8px;padding:7px 15px 7px 12px;font-size:12.5px;font-weight:500;letter-spacing:.01em;
+    border-radius:7px;border:1px solid var(--hair-2);background:var(--fill);
+    color:var(--ink-2);transition:background .13s ease,color .13s ease,border-color .13s ease}
+  .half.live .hacts button.stop .sq{width:9px;height:9px;border-radius:2px;
+    background:var(--ink-3);flex:0 0 auto;transition:background .13s ease,transform .13s ease}
+  .half.live .hacts button.stop:hover{background:rgba(255,110,96,.12);color:var(--ink);
+    border-color:rgba(255,110,96,.5)}
+  .half.live .hacts button.stop:hover .sq{background:#ff6e60;transform:scale(1.1)}
+  .half.live .hacts button.stop:active{transform:translateY(1px)}
+  .half.live .hacts button.stop:focus-visible{outline:2px solid var(--signal);outline-offset:2px}
+  .half.live .hacts button.stop[disabled]{opacity:.6;cursor:default}
+  /* Stopping: the glyph keeps a slow pulse so a sheet that has stopped updating its
+     numbers still shows something alive while the current step finishes. */
+  .half.live .hacts button.stop[disabled] .sq{background:var(--signal);
+    animation:stoppulse 1s ease-in-out infinite}
+  @keyframes stoppulse{0%,100%{opacity:1}50%{opacity:.35}}
+  @media (prefers-reduced-motion:reduce){
+    .half.live .hacts button.stop,.half.live .hacts button.stop .sq{transition:none}
+    .half.live .hacts button.stop[disabled] .sq{animation:none}
+  }
+  /* The counter: figures first, labels whispered under them, one bar for the hops. */
+  .hsub:has(.tick){display:flex;flex-wrap:wrap;gap:14px;align-items:flex-end}
+  .tick{display:flex;flex-direction:column;gap:2px;font-size:10.5px;
+    letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3)}
+  .tick b{font-family:var(--mono);font-size:24px;line-height:1;font-weight:500;
+    color:var(--ink);letter-spacing:0}
+  .tick b i{font-style:normal;font-size:12px;color:var(--ink-3)}
+  /* Repeats are information, not an achievement: same figure treatment, muted, so it
+     reads as bookkeeping beside the rows it was subtracted from. */
+  .tick.dup b{color:var(--ink-3)}
+
+  /* --- the gauge ---------------------------------------------------------- */
+  /* Three figures side by side, same size, same treatment, is a dashboard — and it
+     misdescribes the data. These are three different KINDS of number: a ratio with a
+     known end, a catch that only accumulates, and unbounded elapsed time. They are
+     typeset by what they are.
+
+     The line under them is a sounding line, not a progress bar: a depth scale the
+     marker descends, notched where reading the page becomes opening its media. It is
+     the instrument this tool is named for, and it is the one flourish here — everything
+     around it stays quiet. */
+  .gauge{display:flex;flex-direction:column;gap:15px;width:100%}
+  /* Each figure over its own whispered label — the same grammar the `.tick`
+     blocks use elsewhere in this panel. Run onto one baseline they read as a
+     sentence ("99% of the page read 40 files") in which the two numbers belong
+     to each other, and they do not: one is a position, the other is a catch. */
+  .g-read{display:flex;align-items:flex-end;justify-content:space-between;gap:14px}
+  .g-fig{display:flex;flex-direction:column;gap:4px;min-width:0}
+  .g-hero{font-family:var(--mono);font-size:34px;line-height:.92;font-weight:400;
+    color:var(--ink);letter-spacing:-.015em;font-variant-numeric:tabular-nums}
+  /* The denominator is context, not a second number to read. */
+  .g-hero i{font-style:normal;font-size:16px;color:var(--ink-3);letter-spacing:0}
+  /* MEASURED, not chosen. These three labels were `--ink-3`, the panel's whisper token, and
+     against this sheet that is 4.1:1 — under the 4.5:1 floor at 10.5px, where no large-text
+     exemption applies. They are lifted to `--ink-2` (7.6:1). The hierarchy survives without
+     them being dim: a 10.5px uppercase label under a 34px figure is subordinate by size and
+     case, which is how it should have been carrying the difference in the first place. */
+  .g-what{font-size:11.5px;letter-spacing:.01em;color:var(--ink-2)}
+  /* The catch: right-aligned so it reads as a running total rather than a peer of the
+     hero, and it ticks amber for a moment each time it grows — the echo coming back. */
+  .g-catch{display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex:0 0 auto}
+  .g-catch b{font-family:var(--mono);font-size:20px;line-height:1;font-weight:400;
+    color:var(--ink-2);transition:color .5s ease-out;font-variant-numeric:tabular-nums}
+  .g-catch span{font-size:11.5px;letter-spacing:.01em;
+    color:var(--ink-2);white-space:nowrap}
+  .g-catch.up b{color:var(--signal-2);transition:none}
+
+  /* A segmented meter, in the arcade manner: a framed track filled by discrete blocks
+     rather than a sliding fill. Chosen because segmentation is TRUE here — every block
+     stands for a unit the scan actually completed (a screen walked, a trigger opened, a
+     page landed), so the meter counts instead of merely elongating. Squared corners and
+     one hard offset shadow with no blur are the reference's own grammar; the palette
+     stays this panel's. */
+  .g-act{display:flex;flex-direction:column;gap:7px}
+  .gline{position:relative;display:flex;gap:3px;align-items:stretch;height:15px;
+    padding:3px;border:1px solid var(--hair-2);border-radius:2px;background:var(--sunk);
+    box-shadow:3px 3px 0 rgba(2,8,15,.55);overflow:hidden}
+  .g-seg{flex:1 1 0;min-width:2px;background:var(--fill);border-radius:1px}
+  /* Lit blocks arrive rather than grow — one step of a meter, not a smooth ramp. */
+  .g-seg.on{background:var(--signal);animation:segin .16s ease-out}
+  /* The NEWEST lit block glows, so where the meter has reached reads at a glance.
+     `:last-of-type` looked equivalent and was not — it is always the twentieth block,
+     lit or not, so the glow sat at the end of the track from the first frame. */
+  .g-seg.head{box-shadow:0 0 6px rgba(255,182,72,.5)}
+  .g-seg.edge{background:var(--hair-2)}   /* the phase boundary, kept visible unlit */
+  /* THE BOUNDARY, DRAWN. One faintly lighter block was the whole marker, which on a
+     twenty-block track is invisible — and the legend under the meter now names the two
+     zones out loud ("the whole scan · reading the page first"), so the place where one
+     becomes the other has to be findable. A rule rather than a recoloured block, because
+     a block spent on a divider is a block that stops counting. */
+  .gline.notched::after{content:"";position:absolute;top:2px;bottom:2px;left:var(--notch);
+    width:1px;background:rgba(255,182,72,.45);pointer-events:none}
+  @keyframes segin{from{transform:scaleY(.35);opacity:.4}to{transform:none;opacity:1}}
+  @media (prefers-reduced-motion:reduce){.g-seg.on{animation:none}}
+
+  /* A COUNTER IS NOT A METER, and the frame is what made it look like one.
+     When `ticks` is in play there is no total to fill against — the next page
+     exists until it does not — so the track wraps every twenty rather than
+     saturating, which the comment by `SEGS` defends and which is right. But a
+     framed track carries an implied "and this much left to go", and a wrap then
+     reads as a bar that went backwards. Stripping the frame removes the empty
+     space that implied completion: what is left is a row of marks, which is
+     what a counter looks like. The legend underneath prints the real count, so
+     lap three of forty-three hops is never mistaken for three. */
+  .gline.lap{border-color:transparent;background:none;box-shadow:none;
+    padding:0;height:9px;gap:4px}
+  .gline.lap .g-seg{background:var(--hair-2);border-radius:1px}
+  .gline.lap .g-seg.on{background:var(--signal)}
+  .gline.lap .g-seg.head{box-shadow:0 0 7px rgba(255,182,72,.55)}
+
+  /* WHAT THE METER IS MEASURING, in words, directly under it — and the clock
+     beside it, since both are metadata about the run rather than readings.
+     This line is the whole answer to "the bar contradicts the number": on the
+     asset walk the hero says 99% of the PAGE and the track shows how far
+     through the WHOLE SCAN that is. Both true, and unreadable together until
+     one of them said what it was. */
+  /* And this one above all: it is the line that stops the meter being misread, so a legend
+     the reader has to squint at would leave the original fault exactly where it was. */
+  .g-legend{display:flex;gap:10px;align-items:baseline;justify-content:space-between;
+    font-size:11.5px;letter-spacing:.01em;color:var(--ink-2)}
+  .g-legend .s{min-width:0;white-space:normal;line-height:1.4}
+  /* The clock was a bare number sitting where a number could mean anything on a sheet
+     already carrying three of them. It gets the same whispered label the tick blocks use,
+     so "30s" reads as a duration rather than another count. */
+  .g-legend .t{display:inline-flex;align-items:baseline;gap:5px;flex:0 0 auto;
+    font-family:var(--mono);font-variant-numeric:tabular-nums;color:var(--ink-2);
+    letter-spacing:0;text-transform:none;font-size:11.5px}
+  .g-legend .t i{font-style:normal;font-size:11px;letter-spacing:.01em;
+    color:var(--ink-3);font-family:var(--sans,inherit)}
+
+  /* THE ONE SENTENCE THAT SAYS WHY THE RUN IS SITTING STILL — and it was the
+     one thing on the sheet being truncated. Measured on the built panel across
+     every state it can be in: five of ten cut it off, including
+     "waiting on 1 request the page has …", clipped exactly where it stopped
+     being useful. It shared a single nowrap line with the clock, so the longer
+     the explanation the less of it survived.
+
+     It gets its own block and wraps. The rule down its left edge marks it as an
+     aside about the run rather than a caption of the meter above it. Clamped at
+     four lines with the full text still on the title, because Stop lives below
+     this and no status sentence may push the way out of an unattended run off
+     the screen; no real state reaches the clamp. */
+  .g-why{margin:0;font-size:12px;line-height:1.45;color:var(--ink-2);
+    padding-left:11px;border-left:1px solid var(--hair-2);overflow-wrap:anywhere;
+    display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:4;overflow:hidden}
+  /* The page being read. It is the one thing on this sheet you may need to read
+     EXACTLY — "is that even the right link" is the question a wrong-guess hop
+     leaves you with — so the whole URL, host and all, is on the title. Marked as
+     hoverable, because a tooltip nobody knows is there is a tooltip nobody opens. */
+  .g-why .hop-url{cursor:help;text-decoration:underline dotted rgba(143,168,196,.45);
+    text-underline-offset:3px;transition:color .12s,text-decoration-color .12s}
+  .g-why .hop-url:hover{color:var(--ink);text-decoration-color:currentColor}
+
+  /* Past the repeat threshold. Amber, not red: nothing is broken and nothing was lost —
+     the page is simply repeating itself, and the run is still worth watching. */
+  .g-flag{display:flex;align-items:baseline;gap:7px;padding:6px 9px;border-radius:5px;
+    background:rgba(255,182,72,.09);border:1px solid rgba(255,182,72,.28);
+    font-size:11.5px;color:var(--ink-2)}
+  .g-flag b{font-family:var(--mono);font-size:14px;font-weight:400;color:var(--signal);
+    font-variant-numeric:tabular-nums}
+  .g-flag i{font-style:normal;margin-left:auto;color:var(--ink-3);font-size:11px;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  /* The sheet's own edge answers too, so the state is legible before any line is read. */
+  .half.recycling .halfin{border-top-color:rgba(255,182,72,.75)}
+  @media (prefers-reduced-motion:reduce){
+    .g-mark,.g-run{transition:none}
+  }
+  @keyframes halfin{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+  @media (prefers-reduced-motion:reduce){.half{animation:none}}
+  .hq{margin:0;font-size:16.5px;line-height:1.4;color:var(--ink);font-weight:500}
+  /* The control's own words, quoted, in the panel's signal colour — so the thing being
+     asked about is identifiable at a glance rather than described. */
+  .hq b{color:var(--signal);font-weight:500}
+  .hsub{margin:0;font-size:12.5px;line-height:1.5;color:var(--ink-2)}
+  .hsub b{font-family:var(--mono);color:var(--ink);font-weight:400}
+  /* FACTS AS A LIST, not as a paragraph. A card that offers a minutes-long job has to state what it
+     gives, what it costs and what it risks — three separate things, which as prose becomes four lines
+     of unbroken text that nobody finishes in a 400px column.
+
+     The browser's own list would indent past the card's left edge and put a bullet where the eye is
+     already looking for the first word, so the marker is drawn by the rule below instead: outside the
+     text, dim, and aligned with the paragraph above it. */
+  .hsub ul{margin:6px 0 0;padding:0;list-style:none}
+  .hsub li{position:relative;padding-left:13px;margin-top:3px}
+  .hsub li::before{content:"";position:absolute;left:2px;top:8px;width:3px;height:3px;
+    border-radius:50%;background:var(--ink-3)}
+  /* WHAT DID NOT WORK, told apart from what did — by the marker, not by the words.
+     The end-of-run summary carries both in one list, and a hole in the export ("11 sites did
+     not answer") set in the same dim dot as an achievement is a hole nobody reads. Amber
+     rather than red, for the reason the recycling flag uses it: nothing is broken, the run
+     did what it could, and this is the part the reader has to know before opening the sheet. */
+  .hsub li.miss{color:var(--ink)}
+  .hsub li.miss::before{border-radius:0;width:4px;height:4px;top:7px;left:1px;
+    background:var(--signal);opacity:.85}
+  /* The problem that ended a run, above the facts rather than instead of them. */
+  .hsub .hlead{margin:0 0 2px;color:var(--ink-2)}
+  /* BUTTONS WRAP INSTEAD OF BEING CRUSHED. `flex:1 1 auto` with no wrap divides the panel by
+     however many actions a card happens to carry, so a fourth button took "Read every page
+     from 1" down to four stacked words in a 90px column. A basis of 132px is the narrowest a
+     short label stays on one line at 13px, and wrapping to a second row costs one line of
+     height instead of four. */
+  .hacts{display:flex;flex-wrap:wrap;gap:8px;margin-top:6px}
+  .hacts button{
+    flex:1 1 132px;min-width:0;border-radius:var(--r-1);cursor:pointer;font:inherit;
+    font-size:13px;
+    padding:9px 12px;border:1px solid var(--line);background:var(--fill);color:var(--ink-2);
+  }
+  .hacts button:hover{background:var(--fill-2);color:var(--ink)}
+  .hacts button.go{
+    background:rgba(255,182,72,.16);border-color:rgba(255,182,72,.5);color:var(--signal);
+    font-weight:500;
+  }
+  .hacts button.go:hover{background:rgba(255,182,72,.24)}
+  /* THE REPAIR PATHS ARE NOT CHOICES OF EQUAL WEIGHT. "Point at the pager" and "carry on from
+     here" answer a card that got something wrong, or a preference most people will never hold;
+     drawn as full buttons they compete with the actual decision and push it off the row. Sized
+     to their text and given no fill, they fall onto the line below the two real answers. */
+  .hacts button.thin{flex:0 1 auto;background:none;border-color:transparent;color:var(--ink-3);
+                     font-size:12px;padding:6px 8px}
+  .hacts button.thin:hover{color:var(--ink-2);background:none;text-decoration:underline}
+  .hnote{margin:2px 0 0;font-size:11.5px;color:var(--ink-3)}
+  .cov{margin-top:16px;padding-top:12px;border-top:1px solid var(--hair)}
+  .cov h3{margin:0 0 8px;font-size:12px;font-weight:500;letter-spacing:.06em;
+          text-transform:uppercase;color:var(--ink-3)}
+  .cov dl{display:grid;grid-template-columns:1fr auto;gap:0 12px;margin:0}
+  .cov dt{color:var(--ink-3);font-size:13.5px;padding:3px 0}
+  .cov dd{margin:0;padding:3px 0;font-family:var(--mono);font-size:13px;color:var(--ink-2);
+          text-align:right;font-variant-numeric:tabular-nums}
+  .cov dd.hi{color:var(--signal)}
+
+  /* THE FUNNEL — the end card, drawn in the same blocks as the running one.
+     Three bars to scale answer "where did the run lose rows" without being read: a step that kept
+     everything is full, a step that dropped some is visibly short, and the gap IS the loss. */
+  /* NO BULLETS. The step already carries a numbered dot; a disc beside it is a second marker for
+     the same fact, and `.cov ul li` further up paints one on every list item in a card. */
+  .half .funnel{list-style:none;margin:18px 0 0;padding:0;display:flex;flex-direction:column;gap:19px}
+  .half .funnel>li::before,.half .faults>li::before{content:none;display:none}
+  .half .funnel>li{padding-left:0;margin:0}
+  /* The clock is context and the row count is the answer, so they are not the same size. */
+  .half .fclock{display:block;font-size:12.5px;font-weight:400;letter-spacing:0;color:var(--ink-2)}
+  .half .frows{display:block;margin-top:2px;font-size:26px;font-weight:300;letter-spacing:-.02em;
+    color:var(--ink)}
+  .half .fstep{display:flex;flex-direction:column;gap:7px}
+  .fhead{display:flex;align-items:baseline;justify-content:space-between;gap:12px}
+  .fname{display:flex;align-items:center;gap:9px;min-width:0;font-size:12.5px;color:var(--ink-2)}
+  .fnum{display:grid;place-items:center;flex:0 0 auto;width:16px;height:16px;border-radius:50%;
+    background:rgba(255,182,72,.22);color:var(--signal);font-style:normal;font-size:9.5px;
+    font-family:var(--mono);font-variant-numeric:tabular-nums;line-height:1}
+  .fhead b{flex:0 0 auto;font-family:var(--mono);font-variant-numeric:tabular-nums;font-weight:400;
+    font-size:12.5px;color:var(--ink)}
+  /* The same element the live meter fills, so the two cards speak one language. */
+  .fbar{display:flex;gap:3px;align-items:stretch;height:10px}
+  .fbar .g-seg{flex:1 1 0;min-width:2px;border-radius:1px;background:var(--hair-2)}
+  .fbar .g-seg.on{background:var(--signal)}
+  .fnote{font-size:11px;line-height:1.45;color:var(--ink-3)}
+  .fnote b{font-weight:500;color:var(--ink-2)}
+  .half .faults{list-style:none;margin:20px 0 0;padding:16px 0 0;border-top:1px solid var(--hair);
+    display:flex;flex-direction:column;gap:11px}
+  .half .faults>li{padding-left:0;margin:0;font-size:11.5px;line-height:1.5;color:var(--ink-3)}
+  .cov .why{margin-top:8px;padding-top:8px;border-top:1px solid var(--hair);
+            font-size:12.5px;color:var(--ink-3);line-height:1.5}
+
+  /* --- history ------------------------------------------------------------ */
+  #hist{margin-top:18px;padding-top:12px;border-top:1px solid var(--hair)}
+  /* The one action a screen header may carry, kept quiet: it destroys data, so
+     it must be findable but never compete with the title. */
+  .shead button:not(.sback){background:none;border:0;padding:2px 4px;margin-right:-4px;cursor:pointer;
+                font:inherit;font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3)}
+  .shead button:not(.sback):hover{color:var(--signal)}
+  /* 30px rows, fixed. A history whose rows breathe differently per entry reads as
+     unstyled — and every row here holds the same three facts. */
+  /* THE TOTAL, above the list. History with no total answers half the question it is opened to
+     answer — where have I been, but not what have I collected. */
+  .htotal{display:flex;align-items:baseline;gap:10px;padding:4px 7px 16px}
+  .htotal b{font-family:var(--mono);font-size:30px;font-weight:300;letter-spacing:-.02em;
+    color:var(--signal);font-variant-numeric:tabular-nums;line-height:1}
+  .htotal span{font-size:12.5px;color:var(--ink-2)}
+
+  /* A TIMELINE. The time sits in its own column on the left and the dots make a spine, so "when"
+     is read by position instead of by the same two words repeated down every row. */
+  #histList{position:relative}
+  #histList::before{content:"";position:absolute;left:51px;top:14px;bottom:14px;width:1px;
+    background:var(--hair);pointer-events:none}
+  .hrow{display:grid;grid-template-columns:34px 15px 1fr auto;align-items:center;column-gap:10px;
+    width:100%;padding:9px 7px;background:none;border:0;border-radius:var(--r-2);cursor:pointer;
+    text-align:left;font:inherit;color:var(--ink-2);transition:background .12s}
+  .hrow:hover{background:var(--fill)}
+  .hrow.now{background:rgba(255,182,72,.10)}
+  .hrow.now .hn{color:var(--signal)}
+  .ht{font-family:var(--mono);font-size:11px;color:var(--ink-3);text-align:right;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .hdot{width:9px;height:9px;border-radius:50%;background:var(--hair-2);justify-self:center;
+    box-shadow:0 0 0 3px var(--ground)}
+  .hrow.now .hdot{background:var(--signal)}
+  .hbody{min-width:0;display:flex;flex-direction:column;gap:2px}
+  /* LEFT TO RIGHT, and the label is what the page WAS. `direction:rtl` kept the end of the URL
+     visible, and the end of a Maps URL is `?authuser=0&hl=en` — four runs read identically and
+     named nothing. */
+  .hwhat{font-size:12.5px;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .hhost{font-family:var(--mono);font-size:10.5px;color:var(--ink-3);
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .hn{font-family:var(--mono);font-size:13px;font-weight:500;color:var(--ink);
+    text-align:right;font-variant-numeric:tabular-nums}
+
+  /* --- settings ----------------------------------------------------------- */
+  /* Property-panel shape: label left, control right, one 26px row each. The old
+     stack of full-width checkbox labels had no column to scan down. */
+  details{margin-top:18px;border-top:1px solid var(--hair);padding-top:11px}
+  summary{cursor:pointer;list-style:none;display:flex;align-items:center;gap:6px;
+          font-size:12px;font-weight:500;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3)}
+  summary::-webkit-details-marker{display:none}
+  summary svg{width:11px;height:11px;transition:transform .18s}
+  details[open] summary svg{transform:rotate(90deg)}
+  summary:hover{color:var(--ink-2)}
+  .adv{padding-top:10px}
+  /* The group carries the outer spacing; the rows carry only their own. Before
+     this the rows had a hairline and no padding, so every label sat against a
+     rule — and the larger type made the crowding worse, not better. */
+  /* Sits in the same rhythm as .field: a hairline above, its own padding, and
+     the next section ruled off from it. Before this the group floated in a gap
+     twice the size of any other, which read as a missing heading. */
+  /* NO OWN TOP BORDER: `.props` is always the first thing under a `.shead`, and that header
+     already draws its own bottom border 14px above — its own border-top drew a SECOND hairline
+     a few pixels below the header's, which is the "two separator lines" seen under every
+     screen's title. */
+  .props{padding:4px 0}
+  .props + .field{border-top:1px solid var(--hair)}
+  /* Two kinds of switch live on this one screen now: what a manual scan does, and what an AI
+     agent is allowed to do to this browser. Same list, same row shape — so the only thing that
+     tells them apart is this caption, and it has to actually read as a heading rather than
+     another row. Margin-top gives the SECOND group real air from the first; a `.prop` right
+     before it already carries its own bottom padding, so without this the caption sat pinned to
+     the row above it while floating far from its own group below. */
+  .propcap{margin:20px 0 -2px;font-size:12px;font-weight:500;letter-spacing:.06em;
+           text-transform:uppercase;color:var(--ink-3)}
+  .propcap:first-child{margin-top:2px}
+  .prop{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;
+        padding:11px 0;color:var(--ink-2);font-size:13.5px}
+  .prop + .prop{border-top:1px solid var(--hair)}
+  .prop label{display:flex;align-items:center;gap:7px;cursor:pointer}
+  /* The switch stays on the label's line however far the hint wraps. */
+  .prop input[type=checkbox]{flex:0 0 auto;margin-top:1px}
+  .ptext{display:flex;flex-direction:column;gap:4px;min-width:0}
+  .phint{font-size:12.5px;line-height:1.5;color:var(--ink-3)}
+  .note{font-size:12.5px;color:var(--ink-3);line-height:1.5;padding:0 0 8px}
+  /* Drawn, not tinted. `accent-color` on a native checkbox leaves the browser's
+     own square and just recolours it — which is exactly what a yellow OS
+     checkbox looked like. Amber survives here at knob size: a signal, not a slab. */
+  input[type=checkbox]{
+    appearance:none;-webkit-appearance:none;margin:0;flex:0 0 auto;position:relative;
+    width:26px;height:15px;border-radius:999px;background:var(--fill-2);cursor:pointer;
+    transition:background .18s;
+  }
+  input[type=checkbox]::after{
+    content:"";position:absolute;top:2px;left:2px;width:11px;height:11px;border-radius:50%;
+    background:var(--ink-3);transition:transform .18s,background .18s;
+  }
+  input[type=checkbox]:hover{background:rgba(255,255,255,.14)}
+  input[type=checkbox]:checked{background:rgba(255,182,72,.28)}
+  input[type=checkbox]:checked::after{transform:translateX(11px);background:var(--signal)}
+  @media (prefers-reduced-motion:reduce){input[type=checkbox],input[type=checkbox]::after{transition:none}}
+  /* The risky setting is marked by a rule and its note, not by shouting in
+     amber — amber everywhere is the same as amber nowhere. */
+  .prop.risk{padding-left:12px;box-shadow:inset 2px 0 0 rgba(255,182,72,.55)}
+  .logbox{margin-top:14px;border-top:1px solid var(--hair);padding-top:11px}
+  .logbox summary{font-size:12px}
+  .logbox svg{width:11px;height:11px;transition:transform .18s}
+  .logbox[open] summary svg{transform:rotate(90deg)}
+  .wide{width:100%;height:30px;margin-top:6px;border:1px solid var(--hair-2);border-radius:var(--r-2);
+        background:transparent;color:var(--ink);font:inherit;font-size:13.5px;cursor:pointer}
+  .wide:hover{background:var(--fill);border-color:rgba(255,182,72,.5);color:var(--signal)}
+  #log{font-family:var(--mono);font-size:11px;color:#496784;white-space:pre-wrap;line-height:1.65;margin-top:9px;max-height:180px;overflow:auto}
+
+  @media (prefers-reduced-motion:reduce){
+    body::before,.sound.live::after,.count.bump{animation:none}
+    *{transition:none!important}
+  }
+/* --- connecting an agent ------------------------------------------------------------------
+     ON THE REAL PALETTE. The first version of this block invented --line, --panel and --good,
+     none of which exist here, so every one of them silently fell through to a hardcoded value —
+     including a green accent, when this panel's signal colour is amber. Nothing errored; the
+     screen just quietly stopped belonging to the rest of the UI.
+
+     THE CONTROL LIVES INSIDE THE FIELD, not beside it. Side by side, a 400px column leaves the
+     code about 200px and the button 90 — so the thing being copied is squeezed to one scrolling
+     line while the word "Copy" gets a generous box. Layering it over the field's corner gives the
+     content the full width and costs only padding. Which is why the button must be OPAQUE: an
+     `opacity` on the element fades its background too, and the code then reads straight through
+     the control sitting on top of it. */
+  .bset{padding-bottom:28px}
+  .bstat{display:flex;align-items:center;gap:8px;padding:10px 12px;border-radius:var(--r-3);
+         background:var(--fill);border:1px solid var(--hair);font-size:13px;color:var(--ink-2)}
+  .bstat i{width:8px;height:8px;border-radius:999px;background:var(--ink-3);flex:0 0 auto}
+  .bstat.on{border-color:rgba(255,182,72,.35);background:rgba(255,182,72,.08);color:var(--ink)}
+  .bstat.on i{background:var(--signal);box-shadow:0 0 0 3px rgba(255,182,72,.15)}
+  .bstat.warn i{background:var(--signal-2)}
+  .bstat span{flex:1 1 auto}
+  .brShow{flex:0 0 auto;font-size:12px;padding:5px 10px;border-radius:999px;
+          border:1px solid var(--hair);background:transparent;color:inherit;cursor:pointer}
+  .brShow:hover{background:var(--fill)}
+
+  /* ONE ROW PER AGENT. Sits right under the state band it belongs to, above the setup steps —
+     someone with agents already connected should see them before reading a wizard for step one. */
+  .bhosts{display:flex;flex-direction:column;gap:6px;margin-top:8px}
+  .bhost{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:var(--r-2);
+         background:var(--fill);border:1px solid var(--hair);font-size:12.5px;color:var(--ink-2)}
+  .bhost.released{opacity:.6}
+  .bhwho{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink)}
+  .bhat{font-size:11px;color:var(--ink-3);font-family:var(--mono);flex:0 0 auto}
+  .bhbtns{display:flex;gap:6px;flex:0 0 auto}
+  .bhost button{flex:0 0 auto;font:inherit;font-size:11.5px;font-weight:500;cursor:pointer;
+                padding:4px 10px;border-radius:999px;border:1px solid var(--hair);
+                background:transparent;color:var(--ink-2)}
+  .bhost button:hover{background:var(--fill-2);border-color:rgba(255,110,96,.5);color:var(--ink)}
+  .bhost.released button:hover{border-color:rgba(255,182,72,.5)}
+  /* Permanent tint, not just on hover — same reasoning as the connection window's own .kill: this
+     ends a process, not just a connection, and reads as further along the same red at rest. */
+  .bhost button.kill{border-color:rgba(255,110,96,.35);color:#ff9088}
+  .bhost button.kill:hover{background:rgba(255,110,96,.16);border-color:rgba(255,110,96,.6);color:var(--ink)}
+  .bintro{font-size:13px;line-height:1.6;color:var(--ink-2);margin:14px 0 0}
+
+  .bsteps{list-style:none;margin:8px 0 0;padding:0}
+  .bstep{position:relative;padding:20px 0 4px;border-top:1px solid var(--hair);margin-top:16px}
+  /* top matches .bstep's own 20px top padding — where .bmain's content, and so the heading's
+     line box, actually starts. The previous 14px was 5.5px above the heading's vertical centre,
+     measured, not eyeballed. */
+  .bstep .bnum{position:absolute;left:0;top:20px}
+  .bnum span{display:grid;place-items:center;width:22px;height:22px;border-radius:999px;
+             font-size:11px;border:1px solid var(--hair-2);color:var(--ink-3);
+             font-family:var(--mono)}
+  .bstep.done .bnum span{border-color:transparent;background:var(--signal);color:var(--sunk);
+                         font-size:0;position:relative}
+  /* A drawn mark, not the Unicode ✓ character. That glyph's ink sits off-centre in its own box —
+     `place-items:center` was centring the box, not the stroke — and its weight varies by font. This
+     is a mask, so its box IS the ink: same stroke logic as every other icon in this file (round
+     caps/joins, drawn symmetric), just too small at 22px to earn a full inline <svg>.
+     POSITIONED, NOT GRID-CENTRED. The span still holds its digit text node (invisible at
+     font-size:0, kept for a screen reader) as a SECOND grid child alongside this pseudo-element —
+     `display:grid` auto-places multiple children into separate implicit cells rather than
+     stacking them, so `place-items:center` centred each child within its OWN cell, not both
+     within the circle as one. Absolute + inset:0 + margin:auto takes this out of the grid
+     entirely and centres it against the circle itself, which is what was actually wanted. */
+  .bstep.done .bnum span::after{
+    content:"";position:absolute;inset:0;margin:auto;
+    width:11px;height:9px;background-color:var(--sunk);
+    -webkit-mask-image:url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 12.5l5.5 5.5L20 6.5" fill="none" stroke="%23000" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>');
+    mask-image:url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 12.5l5.5 5.5L20 6.5" fill="none" stroke="%23000" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>');
+    -webkit-mask-size:contain;mask-size:contain;-webkit-mask-repeat:no-repeat;mask-repeat:no-repeat;
+    -webkit-mask-position:center;mask-position:center;
+  }
+  .bmain{padding-left:32px}
+  .bmain h3{font-size:14px;margin:0 0 6px;font-weight:600;color:var(--ink)}
+  .bstep.done .bmain h3{color:var(--ink-2)}
+  .bmain h3 em{font-style:normal;font-weight:400;font-size:11.5px;color:var(--ink-3);
+               margin-left:6px}
+  .bmain p{font-size:12.5px;line-height:1.6;color:var(--ink-2);margin:0 0 10px}
+  .bnote{font-size:11.5px;line-height:1.55;color:var(--ink-3);margin:8px 0 0}
+  .bnote.err{color:var(--signal-2)}
+  .bnote code{font-family:var(--mono);font-size:11px;color:var(--ink-2)}
+
+  .bcode{position:relative;margin:10px 0 0}
+  .bcode pre{margin:0;padding:11px 70px 11px 12px;border-radius:var(--r-3);
+             border:1px solid var(--hair);background:var(--sunk);font-family:var(--mono);
+             font-size:11.5px;line-height:1.6;overflow-x:auto;white-space:pre;color:var(--ink)}
+  /* Opaque, and raised off the surface it covers — no `opacity`, ever. */
+  .bcopy{position:absolute;top:7px;right:7px;font:inherit;font-size:11px;padding:4px 9px;
+         border-radius:var(--r-2);border:1px solid var(--hair-2);background:var(--raise);
+         color:var(--ink-2);cursor:pointer;box-shadow:0 2px 8px rgba(4,16,28,.6)}
+  .bcopy:hover{background:var(--fill-2);color:var(--ink)}
+
+  .bpair{position:relative;margin:12px 0 0}
+  .bpair input{width:100%;font:inherit;font-family:var(--mono);font-size:12.5px;
+               letter-spacing:.04em;padding:11px 78px 11px 12px;border-radius:var(--r-3);
+               border:1px solid var(--hair);background:var(--sunk);color:var(--ink)}
+  .bpair input::placeholder{color:var(--ink-3)}
+  .bpair input:focus{outline:none;border-color:rgba(255,182,72,.45)}
+  .bpair .bbtn{position:absolute;top:6px;right:6px;padding:6px 13px;font-size:12px}
+
+  /* A CARD THAT TAKES TYPING. Monospace, because what goes in it is addresses and a
+     proportional face makes a long query string unreadable.
+
+     THE PAGE NUMBER RIDES INSIDE THE FIELD, not on a line above it. Stacked labels cost a
+     whole row each and read at body size, so three inputs filled the card with more label
+     than field and the eye had to pair each caption with the box under it. As a chip on the
+     left of its own input there is nothing to pair: the row IS the answer to "which page".
+     The border moves to the row so the chip sits inside it, and the input goes bare. */
+  .hslot{display:flex;align-items:center;gap:8px;margin:8px 0 0;padding-left:8px;
+         border-radius:var(--r-3);border:1px solid var(--hair);background:var(--sunk)}
+  .hslot:focus-within{border-color:rgba(255,182,72,.45)}
+  .hchip{flex:none;font-size:10.5px;line-height:1;letter-spacing:.02em;white-space:nowrap;
+         padding:4px 7px;border-radius:var(--r-2);color:var(--ink-2);background:var(--fill);
+         border:1px solid var(--hair-2)}
+  /* Optional, and said where the answer goes rather than in the chip — a chip reading
+     "Page 3 — optional" is wider than the field it labels. */
+  .hslot .opt{color:var(--ink-3);border-style:dashed}
+  .hfield{flex:1;min-width:0;width:100%;font:inherit;font-family:var(--mono);font-size:12px;
+          line-height:1.5;padding:10px 12px 10px 4px;border:0;background:transparent;
+          color:var(--ink)}
+  .hfield::placeholder{color:var(--ink-3)}
+  .hfield:focus{outline:none}
+
+  .bbtn{font:inherit;font-size:12.5px;padding:8px 13px;border-radius:var(--r-2);
+        border:1px solid var(--hair-2);background:var(--fill);color:var(--ink);cursor:pointer}
+  .bbtn:hover{background:var(--fill-2)}
+  .bbtn.primary{background:var(--signal);color:var(--sunk);border-color:transparent;
+                font-weight:600}
+  .bbtn.primary:hover{background:var(--signal-2)}
+  .brow2{display:flex;gap:8px;margin-top:8px}
+
+  /* Five clients do not fit in 400px, and a strip that is simply cut off looks like the list ends
+     there. The fade is over --ground because that is what the panel body is. */
+  .bsegwrap{position:relative;margin:0 0 10px}
+  .bsegwrap::after{content:"";position:absolute;right:0;top:0;bottom:6px;width:28px;
+                   pointer-events:none;
+                   background:linear-gradient(90deg,transparent,var(--ground))}
+  .bseg{display:flex;gap:5px;overflow-x:auto;padding-bottom:6px;scrollbar-width:none}
+  .bseg::-webkit-scrollbar{display:none}
+  .bseg button{flex:0 0 auto;font:inherit;font-size:12px;padding:5px 11px;border-radius:999px;
+               border:1px solid var(--hair);background:transparent;color:var(--ink-3);
+               cursor:pointer;white-space:nowrap}
+  .bseg button:hover{color:var(--ink-2)}
+  .bseg button.on{color:var(--ink);background:var(--fill-2);border-color:var(--hair-2)}
+  .bwhere{font-size:11px;color:var(--ink-3);margin:0 0 2px;font-family:var(--mono);
+          word-break:break-all}
+
+  .bfoot{margin-top:24px;padding-top:18px;border-top:1px solid var(--hair)}
+  .bfoot h4{font-size:12px;letter-spacing:.04em;text-transform:uppercase;color:var(--ink-3);
+            margin:18px 0 6px;font-weight:600}
+            margin:18px 0 6px;font-weight:600}
+</style>
+</head>
+<body>
+  <div class="top">
+    <div class="mark"><img src="public/logo.png" alt="" width="26" height="26" /><span>Holo<i>Scrape</i></span></div>
+    <!-- History and Settings are things you visit, not things you read past. The
+         header holds one way in; the readout below keeps the whole column. -->
+    <button class="burger" id="menu" aria-label="History and settings"
+            aria-expanded="false" aria-controls="drawer">
+      <!-- Closed: three rules. Open: a cross — this control closes the whole
+           sheet from any depth, and each screen carries its own back chevron, so
+           a second chevron here would say "back" twice and mean two things.
+           Both strokes are symmetric about the viewBox centre (12,12). -->
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <g class="bars"><path d="M4 7h16"/><path d="M4 12h16"/><path d="M4 17h16"/></g>
+        <g class="shut"><path d="M6.5 6.5l11 11"/><path d="M17.5 6.5l-11 11"/></g>
+      </svg>
+    </button>
+  </div>
+
+  <div class="pad">
+    <section class="blocked" id="blocked" hidden>
+      <div class="bmark"><svg viewBox="0 0 24 24"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></svg></div>
+      <h2>HoloScrape doesn't run on <span id="blockedHost">this site</span></h2>
+      <p id="blockedWhy">Video and music here arrive as encrypted, expiring stream
+         segments — there is no file sitting there to take. Chrome's store rules
+         also prohibit extensions that try.</p>
+      <p class="bworks"><b>Where it does work:</b> stock and sound libraries, product
+         catalogues, galleries, docs, and most ordinary pages.</p>
+    </section>
+
+    <div class="stale" id="stale" hidden>
+      <b>HoloScrape was updated</b>
+      <p>This panel is still running the old version, so nothing it does will stick.</p>
+      <div class="acts">
+        <button class="act" id="reloadPanel">
+          <span class="ico"><svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 6M20 5v6h-6"/></svg></span>
+          <span class="lbl"><b>Reload the panel</b><span>Your scan history is kept</span></span>
+        </button>
+      </div>
+    </div>
+
+    <div class="arm" id="arm" hidden>
+      <div class="findit">
+        <img src="public/logo.png" alt="" width="40" height="40" />
+        <p>Open a normal web page and HoloScrape reads it straight away.
+           Browser pages like <b>chrome://</b> and the Web Store are off limits to every extension.</p>
+      </div>
+    </div>
+
+    <div id="panel" hidden>
+      <div class="count" id="count">—</div>
+      <!-- The number and the page it belongs to are one sentence. Split across
+           the header and the body they were two facts you had to join yourself. -->
+      <div class="where" id="where"></div>
+      <div class="caption" id="caption">Reading this page…</div>
+      <!-- After the readout, not inside it: the count, the host and the caption
+           are one sentence, and this used to land in the middle of it. -->
+      <p class="thin" id="thin" hidden><b>Expect little here.</b> <span id="thinWhy"></span></p>
+      <div class="strip" id="strip"></div>
+      <div class="chips" id="chips"></div>
+
+      <div class="sound" id="sound"></div>
+
+      <!-- UNTESTED SITE, SAID WHERE THE DECISION IS MADE. This was a halfcard that took over the
+           panel and demanded Dismiss before anything else could be asked — a modal interruption
+           for a fact that only qualifies the button below it. As a banner it sits against that
+           button, says the scan is a guess here, and offers the better route without blocking
+           the ordinary one. Same amber as `.thin`: a qualification, not a failure. -->
+      <p class="untested" id="untested" hidden>
+        <b id="untestedHead"></b> <span id="untestedWhy"></span>
+        <button type="button" class="untested-go" id="untestedGo"></button>
+      </p>
+
+      <div class="acts stack">
+        <button class="act" id="deep">
+          <span class="ico"><svg viewBox="0 0 24 24"><path d="M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14M20 20l-4-4"/></svg></span>
+          <span class="lbl"><b>Deep scan</b><span>Opens media the page hasn't loaded</span></span>
+        </button>
+        <button class="ghost" id="open" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 5h5v5M19 5l-8 8M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4"/></svg>
+          <span>See Result</span>
+        </button>
+      </div>
+
+      <!-- Right beside the buttons that start a scan, not filed away in Settings — this is a
+           decision made about THIS run, and the settings screen's copy of the same checkbox
+           (kept for anyone who goes looking for it there) exists only so both stay one switch,
+           not two out of step with each other. -->
+      <div class="prop" id="autoFollowRow">
+        <label for="autoFollowPanel">Follow pagination and load more</label>
+        <input type="checkbox" id="autoFollowPanel" />
+      </div>
+
+      <!-- The page's repeating structure, as a table. Files answer "what is on
+           this page"; rows answer "what is this page a list of" — and the two
+           join, because a row already carries the URLs of its own images. The
+           guess is shown on the page itself, so confirming it costs a glance
+           and correcting it costs one click. -->
+      <!-- What the page turned out to hold, in one line. No button: the passive
+           read already ran, list detection costs six milliseconds, so there is
+           nothing here to ask for. Every action that operates on this data lives
+           in the results window, beside the data. -->
+
+      <!-- One half-card, and it is only ever up when there is something to answer.
+           It replaced a permanent status panel plus a settings switch plus keyboard
+           chips on every button — three additions to a 400px panel, which is how you
+           make a scan harder to run rather than easier.
+
+           It never pauses the walk. The scan goes on scrolling behind it, because
+           scrolling is how the page mounts content and how the control stays findable;
+           the only thing waiting on an answer is the press. -->
+      <div class="half" id="half" hidden>
+        <div class="halfin" role="dialog" aria-modal="true" aria-labelledby="hq">
+          <p class="hq" id="hq"></p>
+          <p class="hsub" id="hsub"></p>
+          <!-- The ledger's pending rows. They belong BELOW the open row, and the open row's body is
+               the gauge in `#hsub`, so they cannot live inside `#hq` with the rest of the list. -->
+          <p class="hrest" id="hrest"></p>
+          <div class="hacts" id="hacts"></div>
+          <p class="hnote" id="hnote"></p>
+        </div>
+      </div>
+
+      <div class="cov" id="cov" hidden></div>
+
+      <!-- Diagnostics, and they now read like diagnostics. This used to dump
+           "dom: 24 / network: +10" straight into the panel, where it looked like
+           something the reader was meant to act on. Lives here, not inside any one
+           feature's own screen — a scan's own error and a list-scan's error are the
+           same #log, written by whichever ran last. -->
+      <details class="logbox" id="logWrap">
+        <summary><svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>Scan log</summary>
+        <div id="log"></div>
+      </details>
+    </div>
+
+  </div>
+
+  <!-- Everything you go looking for, in one sheet. It covers the panel rather
+       than pushing it down: on a 400px column a drawer that shares the space
+       makes both halves too small to use. -->
+  <div class="drawer" id="drawer" aria-hidden="true">
+    <!-- The menu itself. Each row carries its own current value on the right, in
+         the same shape as a settings property row — so the list answers "how many
+         pages, how thorough, anything queued" without being opened. -->
+    <nav class="menu" id="menuList" aria-label="Menu">
+      <button class="mrow" data-screen="scHist">
+        <span class="mt">Pages scanned</span>
+        <span class="mv" id="mvHist">none yet</span>
+        <svg class="mc" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+      </button>
+      <button class="mrow" data-screen="scSettings">
+        <span class="mt">Settings</span>
+        <span class="mv"></span>
+        <svg class="mc" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+      </button>
+      <button class="mrow" data-screen="scBridge">
+        <span class="mt">AI agents</span>
+        <span class="mv" id="mvBridge">off</span>
+        <svg class="mc" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+      </button>
+    </nav>
+
+    <section class="screen" id="scHist" hidden>
+      <div class="shead">
+        <button class="sback" data-back aria-label="Back to menu">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>
+        </button>
+        <h2>Pages scanned</h2>
+        <button id="histClear">clear</button>
+      </div>
+      <div id="hist">
+        <div class="htotal" id="histTotal" hidden></div>
+        <div id="histList"></div>
+        <p class="sempty" id="histEmpty">Nothing scanned yet. Every page you read shows up here, newest first.</p>
+      </div>
+    </section>
+
+    <!-- LETTING AN AGENT USE THIS BROWSER, which is a different kind of setting from the ones
+         below it: those change how a scan behaves, this one decides whether another program may
+         start scans at all. So it says what it is granting, in the order a person needs it —
+         is anything connected, which code, and which sites it may touch. -->
+    <!-- CONNECTING AN AGENT TO A BROWSER, in a 400px column.
+         The first version squeezed a code block and a Copy button onto one flex row. At this
+         width that leaves the code about 200px — one line of a five-line JSON block, scrolling
+         sideways — so the thing the person came here to copy was the least readable element on
+         screen. Everything below follows from that: code gets the full column, copy floats over
+         its corner, and the tab strip scrolls under a fade so it is visibly not the whole list. -->
+    <section class="screen" id="scBridge" hidden>
+      <div class="shead">
+        <button class="sback" data-back aria-label="Back to menu">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>
+        </button>
+        <h2>AI agents</h2>
+      </div>
+      <div class="scbody bset">
+
+        <!-- The one fact worth knowing before anything else, and the only one that changes on its
+             own. Given its own band so it is legible without reading a step. -->
+        <div class="bstat" id="brState"><i></i><span>Not connected</span>
+          <!-- Chrome will only let a window jump to the front in response to a real click — not a
+               reload, not the browser starting, not the unattended reconnect. So when the window
+               exists but is not up front, this is the one button that can reliably raise it. -->
+          <button id="brShow" class="brShow" type="button" hidden>Show window</button>
+        </div>
+
+        <!-- ONE ROW PER AGENT, EACH WITH ITS OWN RELEASE — not a single switch for all of them. A
+             person running three sessions and wanting rid of one stale one needs to say which; a bulk
+             disconnect cannot say that, and used to be the only control here. -->
+        <div id="brHosts" class="bhosts" hidden></div>
+
+        <p class="bintro">Let <b>Claude&nbsp;Code</b>, <b>Cursor</b> or <b>Windsurf</b> read lists
+          in this browser — in your own signed-in session. Nothing is uploaded, and no password is
+          ever shared.</p>
+
+        <ol class="bsteps">
+          <li class="bstep" id="brStep1">
+            <div class="bnum"><span>1</span></div>
+            <div class="bmain">
+              <h3>Install Node.js <em>skip if you have it</em></h3>
+              <p>Your agent needs it to run HoloScrape. Free, from the official site — npm comes
+                with it.</p>
+              <div class="bcode">
+                <pre id="brNodeCmd">node -v</pre>
+                <button class="bcopy" data-copy="brNodeCmd">Copy</button>
+              </div>
+              <p class="bnote">Run that in <b>Terminal</b> (macOS) or <b>PowerShell</b> (Windows).
+                A version number means you already have it.</p>
+              <button class="bbtn" id="brNode">Get Node.js ↗</button>
+            </div>
+          </li>
+
+          <li class="bstep" id="brStep2">
+            <div class="bnum"><span>2</span></div>
+            <div class="bmain">
+              <h3>Add HoloScrape to your agent</h3>
+              <div class="bsegwrap">
+                <div class="bseg" id="brSeg" role="tablist">
+                  <button role="tab" data-client="claude-code" class="on">Claude&nbsp;Code</button>
+                  <button role="tab" data-client="claude-desktop">Claude&nbsp;Desktop</button>
+                  <button role="tab" data-client="cursor">Cursor</button>
+                  <button role="tab" data-client="windsurf">Windsurf</button>
+                  <button role="tab" data-client="vscode">VS&nbsp;Code</button>
+                </div>
+              </div>
+              <p class="bwhere" id="brWhere"></p>
+              <div class="bcode">
+                <pre id="brCmd"></pre>
+                <button class="bcopy" data-copy="brCmd">Copy</button>
+              </div>
+              <p class="bnote" id="brAfter"></p>
+            </div>
+          </li>
+
+          <li class="bstep" id="brStep3">
+            <div class="bmain">
+              <div class="bnum"><span>3</span></div>
+              <h3>Pair with the code it prints</h3>
+              <p>Only a program holding this code can reach your browser. Run it in a terminal —
+                any folder; it downloads on demand and installs nothing.</p>
+              <div class="bcode">
+                <pre id="brCodeCmd">npx -y holoscrape-mcp --code</pre>
+                <button class="bcopy" data-copy="brCodeCmd">Copy</button>
+              </div>
+              <div class="bpair">
+                <input id="brCode" type="text" placeholder="XXXX-XXXX-XXXX-XXXX-XXXX"
+                       autocomplete="off" spellcheck="false" aria-label="Pairing code" />
+                <button class="bbtn primary" id="brPair">Pair</button>
+              </div>
+              <p class="bnote err" id="brPairErr" hidden></p>
+            </div>
+          </li>
+
+          <li class="bstep" id="brStep4">
+            <div class="bnum"><span>4</span></div>
+            <div class="bmain">
+              <h3>Open the connection window</h3>
+              <!-- The window is where the live socket to the agent actually lives, and Chrome will
+                   only bring a NEW window to the front when a click asked for it — a reload or an
+                   automatic reconnect cannot. So this is the reliable way to see it, any time. -->
+              <p>This is the socket to your agent, kept alive on its own. Closing it disconnects;
+                if it ever ends up behind other windows, open it again here.</p>
+              <button class="bbtn" id="brStep5Show">Open window</button>
+            </div>
+          </li>
+
+          <li class="bstep" id="brStep5">
+            <div class="bnum"><span>5</span></div>
+            <div class="bmain">
+              <h3>Unlock the headless companion <em>optional</em></h3>
+              <!-- The companion is a second, private Chromium the MCP server starts on its own when
+                   this browser cannot paint a page for the agent (DevTools on the tab, the debugger
+                   taken, a page that only renders in front). It has none of your logins and shares no
+                   cookies with this browser. Only the download is a manual step, so nothing 150 MB
+                   ever lands on a machine unasked. -->
+              <p>Public pages can be read in a private headless Chromium when this browser is busy
+                or cannot paint them. It carries none of your logins. One-time download, about 150 MB.</p>
+              <div class="bcode">
+                <pre id="brCompanionCmd">npx -y holoscrape-mcp --install-browser</pre>
+                <button class="bcopy" data-copy="brCompanionCmd">Copy</button>
+              </div>
+              <p class="bnote">Skip it and everything still works in this browser. To turn the
+                companion off later, start the server with <code>HOLOSCRAPE_COMPANION=0</code>.</p>
+            </div>
+          </li>
+        </ol>
+
+        <div class="bfoot">
+          <!-- Not a step. Only matters for "scrape what I have open", and focus cannot answer
+               that: writing the prompt means leaving Chrome. -->
+          <h4>The page agents should use</h4>
+          <p class="bnote" id="brPinned">No page pinned — agents use whichever tab is in front.</p>
+          <div class="brow2">
+            <button class="bbtn" id="brPin">Use this page</button>
+            <button class="bbtn" id="brUnpin">Clear</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="screen" id="scSettings" hidden>
+      <div class="shead">
+        <button class="sback" data-back aria-label="Back to menu">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>
+        </button>
+        <h2>Settings</h2>
+      </div>
+      <div id="more">
+        <!-- One stack, so three switches read as one group rather than three
+             loose lines. The warning belongs to the switch that earns it, so it
+             sits inside that row instead of floating under the whole set, where
+             it looked like a footnote about all three. -->
+        <div class="props">
+          <h4 class="propcap">Scanning</h4>
+          <div class="prop">
+            <label for="autoScroll">Scroll the page first</label>
+            <input type="checkbox" id="autoScroll" checked />
+          </div>
+
+          <div class="prop">
+            <label for="autoOpen">Open results automatically</label>
+            <input type="checkbox" id="autoOpen" />
+          </div>
+
+          <!-- Off by default: the two cards this skips exist because turning the page or
+               growing the feed is a real decision on a site the tool has not seen before — a
+               guessed control, a run that could take minutes, a tab that moves. Once someone has
+               said yes to that a few times, being asked again every single scan is the cost, not
+               the safety. -->
+          <div class="prop">
+            <span class="ptext">
+              <label for="autoFollow">Follow pagination and load more</label>
+              <span class="phint">Turns the page or keeps a feed going on its own, without
+                asking each time. Stop still works at any point, and every page is saved as it
+                lands.</span>
+            </span>
+            <input type="checkbox" id="autoFollow" />
+          </div>
+
+          <!-- Off, and it stays off unless somebody deliberately turns it on. What it does
+               is write a file to Downloads after every hop, which is exactly right when
+               you are diagnosing a site that will not behave and exactly wrong the rest of
+               the time. The label says what it costs rather than what it is. -->
+          <div class="prop" id="devLogRow" hidden>
+            <span class="ptext">
+              <label for="devLog">Keep a log</label>
+              <em>Each finished run writes its own stamped file in Downloads/HoloScrape/.
+                  For working out why a site will not read.</em>
+            </span>
+            <input type="checkbox" id="devLog" />
+          </div>
+          <div class="prop risk">
+            <span class="ptext">
+              <label for="clickDownloads">Press Download buttons</label>
+              <span class="phint">On most sites this really downloads the file and opens their popup.</span>
+            </span>
+            <input type="checkbox" id="clickDownloads" />
+          </div>
+
+          <h4 class="propcap">AI agents</h4>
+          <div class="prop">
+            <label for="brOn">Allow agents to connect</label>
+            <!-- `checked` matches the stored default in bridge.js, the same way brAutoWindow below
+                 does. The panel overwrites it from BRIDGE_STATE a moment later; without it the box
+                 paints unchecked first and visibly flips on, which reads as the panel turning
+                 something on by itself. -->
+            <input type="checkbox" id="brOn" checked />
+          </div>
+          <!-- The window still has to exist for a socket to live in it — that part is not optional,
+               see bridge.js. What this turns off is the window opening ITSELF: on install, on browser
+               startup, on a reload, and on the panel's own heartbeat. "Show window" on the AI agents
+               screen and pairing still open it on purpose; this only silences the paths nobody
+               clicked anything for. -->
+          <div class="prop">
+            <label for="brAutoWindow">Open the connection window automatically</label>
+            <input type="checkbox" id="brAutoWindow" checked />
+          </div>
+          <!-- OFF BY DEFAULT, ON PURPOSE — see bridge.js. Today, closing the sidebar is what stops
+               an agent from driving your browser unattended: the panel is where you can see it
+               working, and closing it is an unambiguous "stop". This turns that off, so the socket
+               (and whatever the agent is mid-way through) survives past a closed sidebar — only
+               flip it on if you actually want an agent able to keep going with the panel shut. -->
+          <div class="prop">
+            <label for="brKeepOnClose">Keep connection window open when the sidebar closes</label>
+            <input type="checkbox" id="brKeepOnClose" />
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+  </div>
+
+  <script type="module" src="sidepanel.js"></script>
+</body>
+</html>

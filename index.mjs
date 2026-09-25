@@ -25,6 +25,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { pathToFileURL } from 'node:url';
 
 const HOME = path.join(os.homedir(), '.holoscrape');
 const PAIR_FILE = path.join(HOME, 'pair.json');
@@ -57,6 +58,77 @@ const PORT_SPAN = 8;
 // neighbour's server from its own listener, and so a failure can name where it is.
 const MINE = { at: 0 };
 
+// --- named values ---------------------------------------------------------------------------------
+// THIS FILE CANNOT IMPORT THE EXTENSION'S `tuning.js`: it is a separate npm package, mirrored
+// byte-identical to another repository, and every module it loads ships in that tarball. So the
+// values the two ends have to AGREE on are written here a second time, each marked "mirrors
+// tuning.js" — change them together or the window dials a server that speaks another dialect.
+//
+// The socket is loopback and nothing else: the extension dials out, this process listens, both on
+// one machine. Named because it is a URL fragment, a `net.connect` host and a line a person reads,
+// and a typo in any one is a connection that never happens. Mirrors tuning.js.
+const LOOPBACK_HOST = '127.0.0.1';
+// The shortest thing that counts as a stored pairing code. `token()` generates 20 characters; a
+// `pair.json` holding fewer than this is a corrupt or hand-edited file, not a code. The panel
+// refuses to store a shorter one under the same rule. Mirrors tuning.js.
+const TOKEN_MIN_CHARS = 8;
+// WebSocket close codes in the application range (RFC 6455 §7.4.2), each a sentence the extension's
+// window reads — it trusts REFUSED as "the code was refused" precisely because browsers report every
+// handshake failure as 1006 on purpose, and only a completed handshake can carry a real code:
+//   REFUSED     wrong pairing code, or a first message that was not a hello
+//   TURNED_OFF  the person switched agents off in the panel (sent by the window, read here)
+//   RELEASED    the person released this one host from the connection window (sent by the window)
+//   ENDED       this process is exiting because the person pressed End session
+// Mirrors tuning.js.
+const WS_CLOSE = { REFUSED: 4001, TURNED_OFF: 4002, RELEASED: 4003, ENDED: 4004 };
+// A close frame's reason is capped well under RFC 6455's 125-byte control-frame payload limit:
+// two bytes of status code plus at most this many bytes of UTF-8 reason.
+const CLOSE_REASON_MAX_BYTES = 100;
+// A beat between writing a close frame and destroying the TCP socket, so the frame reaches the
+// client — without it this degrades back into the abrupt, indistinguishable 1006 close that the
+// handshake ordering exists to avoid.
+const CLOSE_BEAT_MS = 50;
+// The same beat before `process.exit` on a `terminate`, so the ENDED frame leaves before the
+// process — and the port — go with it. Carries more weight than a refusal, so a little longer.
+const EXIT_BEAT_MS = 60;
+// How long a neighbour port is given to accept TCP before the peer scan calls it empty. Loopback
+// answers in microseconds; this is only ever paid by a port that is held and not answering.
+const PEER_PROBE_MS = 300;
+// How long `ask()` waits for the extension to answer an op when the tool's own budget does not say:
+// the ordinary read, a quick tab list, and opening a tab in the other browser (a document load).
+const ASK_MS = 30000;
+const ASK_QUICK_MS = 10000;
+const ASK_OPEN_MS = 60000;
+// The companion browser's launch: how often to look for its socket, how many looks a re-grant may
+// take before it is called lost (50 x 200 ms = 10 s), how long Playwright is given to surface the
+// extension's service worker, and the viewport a headless page paints at — a laptop-class width,
+// so a responsive site serves its desktop layout and not a phone menu.
+const COMPANION_POLL_MS = 200;
+const COMPANION_REGRANT_POLLS = 50;
+const COMPANION_SW_MS = 20000;
+const COMPANION_VIEWPORT = { width: 1366, height: 900 };
+// Reply-shape sizes. A FAILURE REASON remembered for the repeat-call gate, or appended as a note,
+// may run longer than a snippet because it is the whole of what the caller gets. A TAB LINE is
+// "id title" in a "which tab did you mean" list. The SNIPPET size and the too-big-reply caps live
+// beside the spool (`SNIPPET_CHARS`, `SAMPLE_FIELDS_MAX`, `INDEX_ROWS_MAX` below `SPOOL_DIR`):
+// `test/spool-too-big.mjs` lifts that region out of this file and runs it on its own, so the
+// values it reads have to travel with it.
+const FAIL_WHY_MAX_CHARS = 300;
+const TAB_LINE_CHARS = 90;
+// How deep `offerScan` walks a reply looking for urls. A row is an object of strings; six levels
+// covers a nested `value.items[].fields.href` and stops a pathological reply from costing a walk.
+const OFFER_DEPTH_MAX = 6;
+// Reloading tools.mjs from a checkout: fs.watch fires more than once per save on most platforms, so
+// bursts closer than this are one save; and the editor is given this long to finish writing before
+// the file is read back.
+const RELOAD_DEBOUNCE_MS = 300;
+const RELOAD_SETTLE_MS = 60;
+// JSON-RPC 2.0 §5.1 error codes: the method does not exist, and an exception inside a handler.
+const RPC_METHOD_NOT_FOUND = -32601;
+const RPC_INTERNAL_ERROR = -32603;
+// The MCP protocol revision this server speaks when the client does not name one.
+const MCP_PROTOCOL_VERSION = '2025-06-18';
+
 // --- pairing ------------------------------------------------------------------------------------
 // 127.0.0.1 IS NOT A TRUST BOUNDARY. Every process on this machine can reach this port, and what
 // is on the other end is a browser signed into the person's mail, bank and work accounts. Without
@@ -67,7 +139,7 @@ const MINE = { at: 0 };
 function token() {
   try {
     const held = JSON.parse(fs.readFileSync(PAIR_FILE, 'utf8'));
-    if (held?.token?.length >= 8) return held.token;
+    if (held?.token?.length >= TOKEN_MIN_CHARS) return held.token;
   } catch (_) { /* first run */ }
   // Six groups of four from an unambiguous alphabet — no O/0, no I/l/1 — because this gets read
   // off a terminal and typed into a side panel by a person.
@@ -80,6 +152,88 @@ function token() {
   return made;
 }
 const PAIR = token();
+// A SECOND TOKEN FOR THE SERVER'S OWN BROWSER, NEVER PRINTED. The companion (see `companion` below)
+// is a headless Chromium this process launches with the same extension loaded, and it dials the
+// same port range as the person's Chrome. The hello whose token matches THIS one is the companion;
+// `PAIR` stays the person's. Random per process and handed to the extension by `bridgePair` over
+// Playwright, so no one types it and nothing on disk holds it — a token that outlived the process
+// would let the next launch be paired by something other than this server. Same alphabet as PAIR
+// because `bridgePair` upper-cases what it is given (research/COMPANION-DESIGN.md).
+// ON BY DEFAULT, AND THE VARIABLE IS TRI-STATE. The people who need the companion are the ones
+// whose debugger is blocked by policy or by DevTools — the least likely to know an environment
+// variable exists — and a flag defeats the dynamic switch this exists for (owner's decision,
+// 2026-09-22). Unset means on. `HOLOSCRAPE_COMPANION=1` or `--companion` means on. Any OTHER set
+// value — `0`, `off`, even an empty string in an MCP config's env block — means off. It costs
+// nothing while on: nothing launches until a switch is called for (`companionEnsure`).
+const VERSION = (() => {
+  try {
+    const here = path.dirname(new URL(import.meta.url).pathname);
+    return JSON.parse(fs.readFileSync(path.join(here, 'package.json'), 'utf8')).version || '0.0.0';
+  } catch (_) { return '0.0.0'; }
+})();
+
+// A FLAG THIS SERVER DOES NOT KNOW STOPS IT. Measured 2026-09-22: `npx -y holoscrape-mcp
+// --install-browser` fetched the PUBLISHED package — five weeks behind, no such flag — which
+// ignored the word and started serving: a pairing code, four ports, a process paired to the
+// person's extension until it was killed by PID. Nothing said "unknown flag" or which version was
+// running, so a failed install read as a server that had started. Refused here, before anything
+// binds, with the version in the message so a stale package announces itself.
+const KNOWN_FLAGS = new Set(['--code', '--companion', '--install-browser', '--print']);
+{
+  const unknown = process.argv.slice(2).filter((a) => a.startsWith('--') && !KNOWN_FLAGS.has(a));
+  if (unknown.length) {
+    process.stderr.write(`holoscrape-mcp ${VERSION}: unknown flag ${unknown.join(' ')}. Known flags: `
+      + `${[...KNOWN_FLAGS].join(' ')}. If you expected this flag to exist, you may be running an older `
+      + 'published version — `npx -y holoscrape-mcp@latest`, or run the server from a checkout.\n');
+    process.exit(2);
+  }
+}
+
+const COMPANION_ON = process.argv.includes('--companion')
+  || process.env.HOLOSCRAPE_COMPANION === undefined
+  || process.env.HOLOSCRAPE_COMPANION === '1';
+const COMPANION_PAIR = (() => {
+  const abc = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+  return [...crypto.randomBytes(20)].map((b) => abc[b % abc.length]).join('').replace(/(.{4})(?=.)/g, '$1-');
+})();
+const whereOf = (tok) => (tok === COMPANION_PAIR ? 'companion' : 'person');
+
+// ONE SENTENCE, THE SAME EVERYWHERE THE COMPANION CANNOT LAUNCH. It is what an agent relays to the
+// person, so it says what to run and what it unlocks, and nothing else.
+const INSTALL_HINT = 'a headless companion can take public pages when a lane in your Chrome cannot paint '
+  + '(DevTools open, or a managed browser blocking the debugger) — run `npx holoscrape-mcp --install-browser` '
+  + 'once to unlock it (downloads Chromium for Testing, ~150 MB), then retry.';
+
+// `npx holoscrape-mcp --install-browser` — the manual step, done through playwright-core's own CLI
+// so the browser build always matches the library this server imports. `--print` shows the
+// command instead of running it. Exits; never starts serving.
+if (process.argv.includes('--install-browser')) {
+  const { createRequire } = await import('node:module');
+  const req = createRequire(import.meta.url);
+  let cli = '';
+  try { cli = path.join(path.dirname(req.resolve('playwright-core/package.json')), 'cli.js'); } catch (_) {
+    try { cli = path.join(path.dirname(req.resolve('playwright/package.json')), 'cli.js'); } catch (_2) { /* neither */ }
+  }
+  if (!cli || !fs.existsSync(cli)) {
+    process.stderr.write('holoscrape-mcp: playwright-core is not installed beside this server, so there is no CLI to '
+      + 'download the browser with. Reinstall holoscrape-mcp (playwright-core is a dependency) and run this again.\n');
+    process.exit(2);
+  }
+  const argv = [cli, 'install', 'chromium'];
+  if (process.argv.includes('--print')) {
+    process.stdout.write(`${process.execPath} ${argv.join(' ')}\n`);
+    process.exit(0);
+  }
+  process.stderr.write('holoscrape-mcp: downloading Chromium for Testing through playwright-core (about 150 MB, once)…\n');
+  const { spawn: spawnProc } = await import('node:child_process');
+  const child = spawnProc(process.execPath, argv, { stdio: 'inherit' });
+  child.on('exit', (code) => {
+    if (code === 0) process.stderr.write('holoscrape-mcp: done. The companion browser will launch itself the first time a lane in your Chrome cannot paint.\n');
+    process.exit(code ?? 1);
+  });
+  // Keep the process alive until the child exits; nothing below runs.
+  await new Promise(() => {});
+}
 // ONE ID PER SERVER PROCESS, NOT PER PORT. A port gets reused — this process exits, a new agent
 // session binds the same number a minute later — and "release the connection on 27182" must mean
 // THIS session, never whichever one happens to be sitting on that port later. The extension keys its
@@ -90,18 +244,6 @@ const SESSION = crypto.randomUUID();
 // socket connects; both orders are handled where each is used.
 let CLIENT_INFO = null;
 // Same prefix on both ends; the token rides in the WebSocket subprotocol.
-// DEV ONLY — PAIRING OFF, BY EXPLICIT LAUNCH FLAG.
-//
-// The pairing code exists because every process on this machine can reach this port and what is
-// behind it is a browser signed into someone's mail and bank. That reasoning does not change. What
-// this flag says is narrower: the person launching this server, by hand, with this argument, is the
-// developer of it, testing against their own browser, watching each call as it happens.
-//
-// It is a LAUNCH ARGUMENT and never a default: `npx holoscrape-mcp` — what every real user runs —
-// cannot reach this branch. It also is not enough on its own; the extension only auto-pairs in a
-// build made with `--unblock`, which `build.mjs` refuses to produce for prod. Two independent
-// dev-only gates, both of which a real install has shut.
-
 const TOKEN_PROTO = 'holoscrape.token.';
 
 // PRINTING THE CODE ON ITS OWN, because by the time it is needed it is usually unreachable. The
@@ -121,7 +263,14 @@ if (process.argv.includes('--code')) {
 // masking (forbidden by the RFC anyway). Continuation frames ARE handled, because a table of six
 // hundred rows does not arrive in one.
 const GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
-let live = null;                 // the one connected extension
+// TWO BROWSERS, KEYED BY THE TOKEN THEIR HELLO CARRIED. `person` is the connected extension this
+// server has always held — the person's own Chrome, logins and all. `companion` is the headless
+// Chromium this process launches on demand (`companion` below): no session, no banner, no lane tabs
+// on anyone's desk. Every op names which one it rides (`ask(..., where)`); the default is `person`.
+// Measured why both are needed (research/COMPANION-DESIGN.md): a lane with no debugger hold read
+// 0 of 6 pages in the person's Chrome and 6 of 6 in a fresh headless one, while a page behind a
+// sign-in is readable ONLY in the person's. No cookie, header or storage ever moves between them.
+const browsers = { person: { sock: null }, companion: { sock: null } };
 // When the person last turned agents off in HoloScrape — the extension closes its socket with 4002 to
 // say so. Cleared by the next connection. Without it that close reads as any other drop, and the agent
 // is told to reload the extension: the opposite of what was just decided.
@@ -136,9 +285,9 @@ let seq = 0;
 // RFC 6455 §5.5.1: a close frame is protocol data, and protocol data does not exist before the
 // protocol has started — which is the whole reason this file no longer rejects a bad token with a
 // raw HTTP 401 ahead of the 101 response. Payload is the 2-byte status code, big-endian, plus an
-// optional UTF-8 reason; capped well under the 125-byte control-frame limit.
+// optional UTF-8 reason; capped at CLOSE_REASON_MAX_BYTES, well under the 125-byte control-frame limit.
 function closeFrame(code, reason = '') {
-  const text = Buffer.from(reason, 'utf8').subarray(0, 100);
+  const text = Buffer.from(reason, 'utf8').subarray(0, CLOSE_REASON_MAX_BYTES);
   const payload = Buffer.alloc(2 + text.length);
   payload.writeUInt16BE(code, 0);
   text.copy(payload, 2);
@@ -230,13 +379,12 @@ function unframe(state) {
 
 const srv = http.createServer((_req, res) => { res.writeHead(404); res.end(); });
 
-// THE SAME REFUSAL, FROM BOTH PLACES THAT CAN REFUSE. A real close frame, then a moment for it to
-// reach the client before the TCP socket dies underneath it — without the pause this degrades back
-// into the abrupt, indistinguishable code-1006 close that the handshake ordering below exists to
-// avoid. It was written twice, identically, which is one edit away from being written differently.
+// THE SAME REFUSAL, FROM BOTH PLACES THAT CAN REFUSE. A real close frame, then a moment
+// (CLOSE_BEAT_MS) for it to reach the client before the TCP socket dies underneath it. It was
+// written twice, identically, which is one edit away from being written differently.
 function refuse(sock, code, reason) {
   try { sock.write(closeFrame(code, reason)); } catch (_) {}
-  setTimeout(() => sock.destroy(), 50);
+  setTimeout(() => sock.destroy(), CLOSE_BEAT_MS);
 }
 
 // The token rides in the subprotocol so it can be judged before any data flows.
@@ -268,16 +416,16 @@ function openHandshake(sock, key, bearing) {
 function greet(sock, conn, welcome, msg) {
   if (msg.type !== 'hello') {
     say(`refused a connection whose first message was "${msg.type || 'untyped'}", not a hello`);
-    refuse(sock, 4001, 'wrong pairing code');
+    refuse(sock, WS_CLOSE.REFUSED, 'wrong pairing code');
     return false;
   }
-  if (msg.token !== PAIR) {
+  if (msg.token !== PAIR && msg.token !== COMPANION_PAIR) {
     say('refused a connection with the wrong pairing code');
-    refuse(sock, 4001, 'wrong pairing code');
+    refuse(sock, WS_CLOSE.REFUSED, 'wrong pairing code');
     return false;
   }
   say(`extension connected — ${msg.version || 'unknown version'}`);
-  welcome();
+  welcome(whereOf(msg.token));
   return true;
 }
 
@@ -304,10 +452,10 @@ function take(sock, conn, welcome, text) {
   if (msg.type === 'pong' || msg.type === 'hello') return true;
   if (msg.type === 'terminate') {
     say('the person ended this session from the extension — exiting so the port frees up');
-    try { sock.write(closeFrame(4004, 'ended by request')); } catch (_) {}
-    // A beat for the close frame to actually leave the socket before the process — and the port —
-    // goes with it. Same reasoning as `refuse()`'s 50ms pause, doubled: this one carries more weight.
-    setTimeout(() => process.exit(0), 60);
+    try { sock.write(closeFrame(WS_CLOSE.ENDED, 'ended by request')); } catch (_) {}
+    // A beat (EXIT_BEAT_MS) for the close frame to actually leave the socket before the process —
+    // and the port — goes with it. Same reasoning as `refuse()`'s pause; this one carries more weight.
+    setTimeout(() => closeCompanion().then(() => process.exit(0), () => process.exit(0)), EXIT_BEAT_MS);
     return true;
   }
   settle(msg);
@@ -330,34 +478,39 @@ function failWaiter(id, held) {
 }
 
 function onGone(sock) {
-  if (live === sock) {
-    live = null;
-    if (sock.hsCloseCode === 4002) { turnedOffAt = Date.now(); say('extension disconnected: the person turned agents off'); }
-    else if (sock.hsCloseCode === 4003) { releasedAt = Date.now(); say('extension disconnected: the person released this connection'); }
-    // 4004 never reaches here in practice — this process is already exiting when it sends that frame
+  const held = browsers[sock.hsWhere];
+  if (held && held.sock === sock) {
+    held.sock = null;
+    if (sock.hsWhere === 'companion') say('companion disconnected');
+    else if (sock.hsCloseCode === WS_CLOSE.TURNED_OFF) { turnedOffAt = Date.now(); say('extension disconnected: the person turned agents off'); }
+    else if (sock.hsCloseCode === WS_CLOSE.RELEASED) { releasedAt = Date.now(); say('extension disconnected: the person released this connection'); }
+    // ENDED never reaches here in practice — this process is already exiting when it sends that frame
     // — but `onGone` fires from the socket's own 'close'/'error' events regardless of who is faster,
     // so the branch exists for correctness rather than to ever actually log anything useful.
-    else if (sock.hsCloseCode === 4004) { /* exiting */ }
+    else if (sock.hsCloseCode === WS_CLOSE.ENDED) { /* exiting */ }
     else say('extension disconnected');
   }
-  for (const [id, held] of waiting) failWaiter(id, held);
+  // Only the calls that were riding THIS socket: the other browser's calls are still in flight.
+  for (const [id, w] of waiting) if (w.sock === sock) failWaiter(id, w);
 }
 
-// Everything that belongs to one accepted connection.
-function attach(sock, atUpgrade) {
+// Everything that belongs to one accepted connection. `where` is which browser the token said this
+// is; decided at upgrade when the token rode the subprotocol, otherwise by the hello.
+function attach(sock, atUpgrade, where = 'person') {
   const state = { buf: Buffer.alloc(0), parts: [], kill: '' };
   const conn = { paired: false };
   // A message the extension can BELIEVE. Nothing was ever sent on success before, so the only
   // evidence of pairing available to the panel was the socket opening — which is why it drew
   // "Connected" for a handshake that had not happened yet.
-  const welcome = () => {
+  const welcome = (at = where) => {
     conn.paired = true;
-    live = sock;
-    turnedOffAt = 0;
+    sock.hsWhere = at;
+    browsers[at].sock = sock;
+    if (at === 'person') turnedOffAt = 0;
     beat(sock);
     try { sock.write(frame(JSON.stringify({ type: 'welcome', server: 'holoscrape', session: SESSION, client: CLIENT_INFO }))); } catch (_) {}
   };
-  if (atUpgrade) { say('extension connected (authenticated at upgrade)'); welcome(); }
+  if (atUpgrade) { say(`${where === 'companion' ? 'companion' : 'extension'} connected (authenticated at upgrade)`); welcome(); }
   sock.on('data', (chunk) => onData(sock, state, conn, welcome, chunk));
   const gone = () => onGone(sock);
   sock.on('close', gone);
@@ -387,12 +540,13 @@ srv.on('upgrade', (req, sock) => {
   // mattered. Only WHEN the token was checked changes here, not what the panel is allowed to believe
   // before the server has said so.
   const bearing = offeredToken(req);
-  const wrongAtUpgrade = bearing && bearing.slice(TOKEN_PROTO.length) !== PAIR;
+  const borne = bearing.slice(TOKEN_PROTO.length);
+  const wrongAtUpgrade = bearing && borne !== PAIR && borne !== COMPANION_PAIR;
 
   openHandshake(sock, key, bearing);
-  if (!wrongAtUpgrade) return attach(sock, !!bearing);
+  if (!wrongAtUpgrade) return attach(sock, !!bearing, whereOf(borne));
   say('refused an upgrade with the wrong pairing code');
-  refuse(sock, 4001, 'wrong pairing code');
+  refuse(sock, WS_CLOSE.REFUSED, 'wrong pairing code');
 });
 
 // Ask the extension to do something and wait for its answer.
@@ -415,7 +569,7 @@ const BEAT_MISSES = 2;
 // replaced, it has stopped answering, it gets a ping — are three flat statements instead of a
 // nested branch inside a callback.
 function pulse(sock, timer, count) {
-  if (live !== sock) return clearInterval(timer);
+  if (browsers[sock.hsWhere]?.sock !== sock) return clearInterval(timer);
   // Counted here and not at the call site, so a socket already replaced never accrues a miss —
   // the original incremented only after the liveness check and that ordering is load-bearing.
   count.missed += 1;
@@ -467,9 +621,9 @@ const RELEASED = 'The person released this specific browser connection in HoloSc
 // almost certainly the answer. Cheap enough to do on the failure path only.
 function peerAt(at) {
   return new Promise((resolve) => {
-    const s = net.connect({ port: at, host: '127.0.0.1' });
+    const s = net.connect({ port: at, host: LOOPBACK_HOST });
     const done = (yes) => { try { s.destroy(); } catch (_) {} resolve(yes); };
-    s.setTimeout(300, () => done(false));
+    s.setTimeout(PEER_PROBE_MS, () => done(false));
     s.once('connect', () => done(true));
     s.once('error', () => done(false));
   });
@@ -516,9 +670,9 @@ async function whyNoBrowser() {
   //
   // All this process can see is: nobody dialled ME, and someone else is also listening. Both of the
   // two explanations lead to the same first action, so say both and give the action.
-  return `No browser connected here (127.0.0.1:${MINE.at || '?'}), and ${others.length === 1
-    ? `another agent session's server is also listening, on 127.0.0.1:${others[0]}`
-    : `other agent sessions' servers are also listening, on 127.0.0.1:${others.join(', ')}`}.\n`
+  return `No browser connected here (${LOOPBACK_HOST}:${MINE.at || '?'}), and ${others.length === 1
+    ? `another agent session's server is also listening, on ${LOOPBACK_HOST}:${others[0]}`
+    : `other agent sessions' servers are also listening, on ${LOOPBACK_HOST}:${others.join(', ')}`}.\n`
     + 'Two possibilities, and this process cannot tell them apart — it only knows nobody dialled it:\n'
     + `  a. The browser is attached to ${others.length === 1 ? 'that server' : 'one of those servers'} `
     + 'instead of this one. An extension build from before the multi-socket change keeps ONE socket, '
@@ -544,8 +698,14 @@ function giveUp(id, op, ms, reject) {
   reject(new Error(`the browser did not answer "${op}" within ${Math.round(ms / 1000)}s`));
 }
 
-function ask(op, args, ms = 30000) {
-  if (!live) return whyNoBrowser().then((why) => Promise.reject(new Error(why)));
+// `where` names the browser: 'person' (default, as it always was) or 'companion'. A companion that
+// is off or never came up is a refusal with the switch to flip, not a "no browser" hunt.
+function ask(op, args, ms = ASK_MS, where = 'person') {
+  const sock = browsers[where]?.sock;
+  if (!sock) {
+    return (where === 'companion' ? Promise.resolve(companionWhy()) : whyNoBrowser())
+      .then((why) => Promise.reject(new Error(why)));
+  }
   const id = ++seq;
   // Timed so the trace can separate what the BROWSER took from what the whole call took. Charged
   // on both paths, because a call that timed out still spent the time.
@@ -553,9 +713,161 @@ function ask(op, args, ms = 30000) {
   const charge = () => { browserMs.spent += Date.now() - t0; };
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => giveUp(id, op, ms, reject), ms);
-    waiting.set(id, { resolve, reject, timer });
-    live.write(frame(JSON.stringify({ id, op, args })));
+    waiting.set(id, { resolve, reject, timer, sock });
+    sock.write(frame(JSON.stringify({ id, op, args })));
   }).then((v) => { charge(); return v; }, (e) => { charge(); throw e; });
+}
+
+// --- the companion: a headless Chromium this process launches, with the same extension ------------
+//
+// THE PERSON'S CHROME CANNOT DO EVERYTHING, AND NEITHER CAN A BROWSER WITH NO LOGIN. Measured with
+// the real harvest, 3 lanes (research/WORK-WINDOW-EXPERIMENT.md): with the debugger hold, background
+// lane tabs read 12 of 12; with the hold unavailable — DevTools open on a lane, or Chrome 155's
+// managed policy blocking `debugger.attach` — they read 0 of 6. A fresh headless Chromium has no
+// DevTools open and no policy, so the same lanes paint. The other way round, a page behind a sign-in
+// is readable only where the person is signed in. So the server holds both and routes each op to
+// the one that can answer (`routed` below); this section is only the launching.
+//
+// ON BY DEFAULT, OFF WITH HOLOSCRAPE_COMPANION=0 (any set value but `1`); `--companion` or `=1` say
+// on out loud. The companion is the SERVER's browser, holding nothing of the person's, and the
+// restricted-host list still applies inside it.
+//
+// LAZY, ONCE PER PROCESS, AND TEMPORARY. Nothing launches until a call needs it. The profile is a
+// fresh temp dir, the extension is a temp build with THIS server's port as its portBase (the way
+// probe/headless-mcp.mjs assembles one), and both are removed at exit. Playwright is loaded with a
+// dynamic import so this file stays zero-dependency for everyone who never turns the companion on.
+const COMPANION_HELLO_MS = 25000;
+const companion = { ctx: null, sw: null, build: '', profile: '', starting: null, granted: new Set(), why: '' };
+
+function companionWhy() {
+  if (!COMPANION_ON) {
+    return 'The companion browser was turned off for this session (HOLOSCRAPE_COMPANION is set to '
+      + `${JSON.stringify(process.env.HOLOSCRAPE_COMPANION)}). It is a headless Chromium this server launches itself (no `
+      + 'login, no debugging banner) for public pages. Turn it on with HOLOSCRAPE_COMPANION=1 in the MCP '
+      + 'config env, or --companion on the command; unset means on. Until then every call runs in their Chrome.';
+  }
+  return companion.why || 'The companion browser is not connected yet — it launches on first use.';
+}
+
+// Branded Chrome refuses --load-extension, so the channel is chromium. The UA string of a headless
+// build says "HeadlessChrome", which Cloudflare and Techaro match on (measured in test/quiet.mjs:
+// 1 image bare, 24 and 44 with the word removed, matching headed). One throwaway launch reads the
+// real string, cached per Playwright version in tmp so the cost lands once per machine.
+async function quietUserAgent(pw) {
+  const stamp = (() => { try { return JSON.parse(fs.readFileSync(new URL(import.meta.resolve('playwright/package.json')), 'utf8')).version; } catch (_) { return 'unknown'; } })();
+  const file = path.join(os.tmpdir(), 'holoscrape-ua.json');
+  try {
+    const hit = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (hit.stamp === stamp && hit.ua) return hit.ua;
+  } catch (_) { /* no cache yet */ }
+  const probe = await pw.chromium.launch({ headless: true, channel: 'chromium' });
+  let ua;
+  try { ua = (await (await probe.newPage()).evaluate(() => navigator.userAgent)).replace(/HeadlessChrome/g, 'Chrome'); } finally { await probe.close(); }
+  try { fs.writeFileSync(file, JSON.stringify({ stamp, ua })); } catch (_) { /* read-only tmp: probe again next time */ }
+  return ua;
+}
+
+async function launchCompanion() {
+  let pw;
+  try { pw = await import('playwright'); } catch (_) {
+    try { pw = await import('playwright-core'); } catch (_2) {
+      throw new Error(`companion unavailable: ${INSTALL_HINT} (playwright-core is missing where this server runs — `
+        + 'reinstall holoscrape-mcp, it is a dependency).');
+    }
+  }
+  // The extension source: HOLOSCRAPE_EXT_DIR, else the repo root beside mcp/. The npm package does
+  // not carry the extension yet, so a bare `npx holoscrape-mcp` has nothing to load — said plainly.
+  // THE SAME FILE RUNS FROM TWO LAYOUTS. In the repo it is `<root>/mcp/index.mjs` and the
+  // extension is the root itself; in the npm package it is `<pkg>/index.mjs` and the extension
+  // is the bundled `<pkg>/extension/` (scripts/bundle-extension.mjs writes it at mirror time). One
+  // resolution order serves both, and HOLOSCRAPE_EXT_DIR overrides either.
+  const here = path.dirname(new URL(import.meta.url).pathname);
+  const hasExt = (d) => fs.existsSync(path.join(d, 'manifest.json')) && fs.existsSync(path.join(d, 'build.mjs'));
+  const extDir = [process.env.HOLOSCRAPE_EXT_DIR, path.join(here, 'extension'), path.join(here, '..')]
+    .filter(Boolean).find(hasExt);
+  if (!extDir) {
+    throw new Error('companion unavailable: the HoloScrape extension source was not found (looked for '
+      + `manifest.json + build.mjs in ${process.env.HOLOSCRAPE_EXT_DIR ? `${process.env.HOLOSCRAPE_EXT_DIR}, ` : ''}`
+      + `${path.join(here, 'extension')} and ${path.join(here, '..')}). Point HOLOSCRAPE_EXT_DIR at a checkout `
+      + 'of the HoloScrape repo, or reinstall holoscrape-mcp — the package bundles it.');
+  }
+  const { envFile, injectable } = await import(pathToFileURL(path.join(extDir, 'build.mjs')).href);
+  const build = fs.mkdtempSync(path.join(os.tmpdir(), 'hs-companion-ext-'));
+  const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'hs-companion-prof-'));
+  companion.build = build; companion.profile = profile;
+  for (const f of fs.readdirSync(extDir)) if (/\.(js|html)$/.test(f)) fs.copyFileSync(path.join(extDir, f), path.join(build, f));
+  fs.copyFileSync(path.join(extDir, 'manifest.json'), path.join(build, 'manifest.json'));
+  // THIS server's port as the base, so the companion dials the span this process is in and no other.
+  fs.writeFileSync(path.join(build, 'env.js'), envFile('stg', { unblock: false, portBase: MINE.at || PORT_BASE }));
+  // Generated by the build, not checked in; without it every harvested page fails to inject.
+  fs.writeFileSync(path.join(build, 'harvest-inject.js'), injectable(fs.readFileSync(path.join(extDir, 'harvest.js'), 'utf8')));
+  fs.cpSync(path.join(extDir, 'public'), path.join(build, 'public'), { recursive: true });
+  let ctx;
+  try {
+    ctx = await pw.chromium.launchPersistentContext(profile, {
+      headless: true, channel: 'chromium', userAgent: await quietUserAgent(pw).catch(() => undefined),
+      viewport: COMPANION_VIEWPORT,
+      args: [`--disable-extensions-except=${build}`, `--load-extension=${build}`],
+    });
+  } catch (e) {
+    // "Executable doesn't exist" is what a fresh install says: the library is here, the browser is
+    // not. That is the one thing the person has to do by hand — a 150 MB download is never silent.
+    const m = String(e?.message || e);
+    if (/Executable doesn't exist|browserType\.launch|install/i.test(m)) throw new Error(`companion unavailable: ${INSTALL_HINT}`);
+    throw e;
+  }
+  companion.ctx = ctx;
+  const sw = ctx.serviceWorkers()[0] || await ctx.waitForEvent('serviceworker', { timeout: COMPANION_SW_MS });
+  companion.sw = sw;
+  await sw.evaluate(async (t) => { await globalThis.__holoscrape.bridgePair(t); }, COMPANION_PAIR);
+  for (let i = 0; i < COMPANION_HELLO_MS / COMPANION_POLL_MS && !browsers.companion.sock; i++) await pause(COMPANION_POLL_MS);
+  if (!browsers.companion.sock) throw new Error(`companion unavailable: it launched but never dialled ${LOOPBACK_HOST}:${MINE.at} within ${COMPANION_HELLO_MS / 1000}s`);
+  say('companion connected — a headless Chromium of this server\'s own, no session in it');
+  return companion;
+}
+
+// Idempotent and single-flight: two calls that both need the companion share one launch.
+function companionEnsure() {
+  if (browsers.companion.sock) return Promise.resolve(companion);
+  if (!COMPANION_ON) return Promise.reject(new Error(companionWhy()));
+  if (!companion.starting) {
+    companion.starting = launchCompanion()
+      .catch((e) => { companion.why = String(e?.message || e); closeCompanion(); throw e; })
+      .finally(() => { companion.starting = null; });
+  }
+  return companion.starting;
+}
+
+// Consent inside the companion, per origin, on demand. Nothing of the person's is exposed by a read
+// in a browser that holds nothing of theirs, so the server grants it the way the panel would.
+//
+// A GRANT RESTARTS THE SOCKETS. bridge-window.js shuts every socket and redials on ANY change to the
+// `bridge` setting in storage — a grant included — so the companion drops for about a second right
+// after this write, and a call sent into that gap dies "the extension disconnected mid-call".
+// Measured on the very first switched harvest. So this waits for the socket to come back before
+// returning, rather than asking the extension to tell a re-pair from a grant.
+const pause = (ms) => new Promise((r) => setTimeout(r, ms));
+async function companionGrant(origin) {
+  if (!origin || companion.granted.has(origin) || !companion.sw) return;
+  const before = browsers.companion.sock;
+  await companion.sw.evaluate(async (o) => { await globalThis.__holoscrape.bridgeGrant(o, true); }, origin);
+  companion.granted.add(origin);
+  for (let i = 0; i < COMPANION_REGRANT_POLLS; i++) {
+    const now = browsers.companion.sock;
+    if (now && now !== before) break;
+    await pause(COMPANION_POLL_MS);
+  }
+  if (!browsers.companion.sock) throw new Error(`companion unavailable: it did not reconnect after consenting to ${origin}`);
+}
+const originOf = (u) => { try { return new URL(String(u)).origin; } catch (_) { return ''; } };
+const originsOf = (args) => new Set([args?.url, ...(Array.isArray(args?.urls) ? args.urls : [])].map(originOf).filter(Boolean));
+
+function closeCompanion() {
+  const { ctx, build, profile } = companion;
+  companion.ctx = null; companion.sw = null; companion.granted = new Set();
+  const rm = () => { for (const d of [build, profile]) if (d) fs.rmSync(d, { recursive: true, force: true }); };
+  if (!ctx) { rm(); return Promise.resolve(); }
+  return ctx.close().catch(() => {}).then(rm, rm);
 }
 
 // --- the agent end: MCP over stdio ---------------------------------------------------------------
@@ -565,8 +877,8 @@ function ask(op, args, ms = 30000) {
 const say = (s) => process.stderr.write(`holoscrape-mcp: ${s}\n`);
 const send = (m) => process.stdout.write(`${JSON.stringify(m)}\n`);
 
-import { TOOLS as TOOLS0, OPS as OPS0, SLOW as SLOW0, NEXT as NEXT0, timeoutFor as timeoutFor0 } from './tools.mjs';
-import { INSTRUCTIONS } from './guidance.mjs';
+import { TOOLS as TOOLS0, OPS as OPS0, SLOW as SLOW0, NEXT as NEXT0, PRE as PRE0, timeoutFor as timeoutFor0 } from './tools.mjs';
+import { BRIEF, BRIEF_COMPANION, INSTRUCTIONS } from './guidance.mjs';
 import { resolveXVideo, statusIdFromUrl } from './x-video-resolve.js';
 
 // THE TOOL SURFACE IS HELD IN A BOX SO IT CAN BE REPLACED WHILE RUNNING.
@@ -580,16 +892,11 @@ import { resolveXVideo, statusIdFromUrl } from './x-video-resolve.js';
 // process notices. So the box below is swapped when tools.mjs changes on disk, and the client is
 // told. Editing the file now updates a live session instead of requiring a reconnect nobody knows
 // to perform.
-const surface = { TOOLS: TOOLS0, OPS: OPS0, SLOW: SLOW0, NEXT: NEXT0, timeoutFor: timeoutFor0 };
+const surface = { TOOLS: TOOLS0, OPS: OPS0, SLOW: SLOW0, NEXT: NEXT0, PRE: PRE0, timeoutFor: timeoutFor0 };
 
 // READ FROM package.json RATHER THAN TYPED HERE. A version in two places is a version that will
 // disagree with itself, and the whole point of reporting it is that it is trustworthy.
-const VERSION = (() => {
-  try {
-    const here = path.dirname(new URL(import.meta.url).pathname);
-    return JSON.parse(fs.readFileSync(path.join(here, 'package.json'), 'utf8')).version || '0.0.0';
-  } catch (_) { return '0.0.0'; }
-})();
+// (VERSION is defined near the top of the file, beside the flag gate that prints it.)
 
 
 // A tool result is text content; big tables are trimmed HERE rather than in the browser, so the
@@ -630,7 +937,8 @@ const MAX_REPLY = Math.floor(MAX_TOKENS * CHARS_PER_TOKEN);   // 37,500
 const SMALLER = {
   page_state: 'fields:["a.b","c"] to keep only the columns you need — the biggest win by far — '
     + 'then limit for fewer rows and depth for a shallower read. offset walks the rest.',
-  page_state: 'fields to keep only the columns you need, then limit/offset to page the rest.',
+  // ONE key per tool. A second `page_state` line sat under this one for a while and, being
+  // later in the literal, silently won — the advice above was never what an agent saw.
   results_get: 'columns:["..."] to keep only the columns you need, then limit.',
 };
 
@@ -658,6 +966,16 @@ const SMALLER = {
 // into a credential bypass — the one trust tier the project treats as non-negotiable.
 const SPOOL_DIR = path.join(os.tmpdir(), 'holoscrape-spool', String(process.pid));
 const CHUNK_TARGET = Math.floor(MAX_REPLY * 0.8);   // a chunk any single read can swallow whole
+// HERE, NOT IN THE BLOCK AT THE TOP: `test/spool-too-big.mjs` lifts everything from `SPOOL_DIR` to
+// the repeat-call gate out of this file and runs it standalone, so what this region reads must be
+// defined inside it. A SNIPPET is a short quote inside a sentence — a row's label in the index, the
+// first line of an error, the `failed` field in a trace line. When a reply is too big to return,
+// this many field names of the first row are quoted so a projection can be written from them, and
+// this many rows are named in the index — sixty, so the index itself can never become the thing
+// that is too big.
+const SNIPPET_CHARS = 120;
+const SAMPLE_FIELDS_MAX = 40;
+const INDEX_ROWS_MAX = 60;
 let spoolN = 0;
 
 // The one array worth splitting: the longest top-level one. Everything else is small enough that
@@ -722,9 +1040,9 @@ function spool(value, text, name) {
 // Urls first: a network map is a list of urls and nothing else identifies a response.
 function labelOf(row) {
   if (row == null) return '';
-  if (typeof row !== 'object') return String(row).slice(0, 120);
+  if (typeof row !== 'object') return String(row).slice(0, SNIPPET_CHARS);
   for (const k of ['url', 'href', 'name', 'title', 'id', 'path', 'selector', 'text']) {
-    if (typeof row[k] === 'string' && row[k]) return `${k}=${row[k].slice(0, 120)}`;
+    if (typeof row[k] === 'string' && row[k]) return `${k}=${row[k].slice(0, SNIPPET_CHARS)}`;
   }
   return Object.keys(row).slice(0, 6).join(',');
 }
@@ -745,13 +1063,13 @@ function asResult(value, name = '') {
       : Array.isArray(value?.value) ? value.value
         : Array.isArray(value?.items) ? value.items
           : Array.isArray(value) ? value : null;
-  const sample = rows?.[0] && typeof rows[0] === 'object' ? Object.keys(rows[0]).slice(0, 40) : null;
+  const sample = rows?.[0] && typeof rows[0] === 'object' ? Object.keys(rows[0]).slice(0, SAMPLE_FIELDS_MAX) : null;
 
   // WRITTEN TO DISK BEFORE THE REFUSAL IS COMPOSED, so the answer survives being un-returnable.
   const put = spool(value, text, name);
 
-  // An index of the rows, not the rows: enough to say WHICH one to open. Capped at 60 so the
-  // index itself can never become the thing that is too big.
+  // An index of the rows, not the rows: enough to say WHICH one to open. Capped at INDEX_ROWS_MAX
+  // so the index itself can never become the thing that is too big.
   //
   // INDEXED FROM THE ARRAY THAT WAS ACTUALLY CHUNKED, not from `rows` above. `rows` only knows
   // four shapes (`value.rows`, `value.value.items`, `value.value`, `value.items`) and a network
@@ -759,7 +1077,7 @@ function asResult(value, name = '') {
   // the exact reply this whole mechanism was built for. `biggestArray` already found that array
   // to split it; the index uses the same answer.
   const indexRows = put.rows || rows;
-  const index = indexRows ? indexRows.slice(0, 60).map(labelOf).filter(Boolean) : undefined;
+  const index = indexRows ? indexRows.slice(0, INDEX_ROWS_MAX).map(labelOf).filter(Boolean) : undefined;
 
   return {
     content: [{ type: 'text', text: JSON.stringify({
@@ -880,7 +1198,7 @@ const OFFERS_MAX = 3000;
 const offers = new Map();    // url -> the tabId whose read handed it over
 
 function offerScan(v, into, depth = 0) {
-  if (v === null || v === undefined || depth > 6 || into.size >= OFFER_SCAN) return;
+  if (v === null || v === undefined || depth > OFFER_DEPTH_MAX || into.size >= OFFER_SCAN) return;
   if (typeof v === 'string') { if (/^https?:\/\/./.test(v)) into.add(v); return; }
   if (Array.isArray(v)) { for (const x of v) offerScan(x, into, depth + 1); return; }
   if (typeof v === 'object') for (const x of Object.values(v)) offerScan(x, into, depth + 1);
@@ -959,7 +1277,163 @@ function loopRefusal(l) {
     + 'differ from each other — pass oneByOne:true to tab_here and this will stand aside.';
 }
 
+// --- which browser answers ---------------------------------------------------------------------
+// THE ROUTING RULES, IN ORDER (research/COMPANION-DESIGN.md "Routing rules"):
+//   1. OWNERSHIP WINS. A tabId, runId or resultId belongs to the browser that minted it — a companion
+//      tab id means nothing in the person's Chrome and vice versa — so the three maps below are filled
+//      from every reply and a call naming one of them goes there, always.
+//   2. EXPLICIT `where` next; refused plainly when that browser is off or unavailable.
+//   3. DEFAULT IS THE PERSON.
+//   4. person -> companion, once per call, when the reply says the page was read in a lane that could
+//      not paint (page.frames:false, lanes.held:false, or the op threw about the debugger).
+//   5. companion -> person, once per call, when the companion's reply says the page wanted the person
+//      (a challenge, a login bounce, or the op threw about signing in).
+//   6. Never both in one call; never a results/status call (ownership decides); never a refusal the
+//      other browser would give too (those throw messages match neither regex).
+const OWN_MAX = 4000;
+const tabWhere = new Map();
+const runWhere = new Map();
+const resultWhere = new Map();
+const remember = (map, key, where) => {
+  if (key === undefined || key === null || key === '') return;
+  if (map.size >= OWN_MAX) map.delete(map.keys().next().value);
+  map.set(String(key), where);
+};
+// Every id a reply carries, top level and one array down (tabs.list, results.list).
+function own(where, out) {
+  if (!out || typeof out !== 'object') return;
+  remember(tabWhere, out.tabId, where);
+  remember(runWhere, out.runId, where);
+  remember(resultWhere, out.resultId, where);
+  for (const t of Array.isArray(out.tabs) ? out.tabs : []) remember(tabWhere, t?.tabId, where);
+  for (const r of Array.isArray(out.results) ? out.results : []) remember(resultWhere, r?.resultId, where);
+}
+function ownerOf(args) {
+  if (!args || typeof args !== 'object') return null;
+  if (args.tabId !== undefined && args.tabId !== null && tabWhere.has(String(args.tabId))) return tabWhere.get(String(args.tabId));
+  for (const k of ['runId', 'retryOf']) if (args[k] && runWhere.has(String(args[k]))) return runWhere.get(String(args[k]));
+  if (args.resultId && resultWhere.has(String(args.resultId))) return resultWhere.get(String(args.resultId));
+  const first = Array.isArray(args.resultIds) ? args.resultIds.find((id) => resultWhere.has(String(id))) : null;
+  return first ? resultWhere.get(String(first)) : null;
+}
+
+// The tools a switch may move. `results` (every action) routes by owner only; current_page and
+// tabs_list describe the person's desk and have no companion meaning.
+const SWITCHABLE = new Set(['tab_here', 'list_extract', 'page_harvest', 'page_study', 'page_grow', 'page_state']);
+const UNPAINTED = /debugger|attach|DevTools/i;
+const WANTS_PERSON = /log ?in|sign ?in|verify/i;
+
+// A LOGIN BOUNCE, READ OFF TWO URLS — the same structural test `heldForReturn` makes in bridge-ops.js,
+// here because `tab.open` (the companion's door) reports only where it landed. A site that bounces
+// you keeps your destination in a query parameter to return you afterwards; no vocabulary is needed
+// because what is checked is that SOME parameter value decodes to a url holding the PATH asked for.
+// Decoded until it stops changing (three passes), because a challenge nests it two redirects deep.
+function heldBack(landed, wanted) {
+  try {
+    const L = new URL(String(landed)); const W = new URL(String(wanted));
+    if (L.pathname === W.pathname || W.pathname.length < 4) return false;
+    for (const v of L.searchParams.values()) {
+      let dec = v;
+      for (let i = 0; i < 3; i++) { let n = dec; try { n = decodeURIComponent(dec); } catch (_) { break; } if (n === dec) break; dec = n; }
+      if (dec.includes(W.pathname)) return true;
+    }
+  } catch (_) { /* not urls */ }
+  return false;
+}
+
+// Why a reply (or a throw) calls for the other browser, or '' when it does not.
+function switchWhy(name, where, out, threw, args) {
+  if (!SWITCHABLE.has(name)) return '';
+  const msg = threw ? String(threw.message || threw) : '';
+  if (where === 'person') {
+    if (!COMPANION_ON) return '';
+    if (out?.lanes?.held === false) return 'lanes.held:false — the debugger hold was unavailable in the person\'s Chrome, so lane tabs there do not paint';
+    if (out?.page?.frames === false) return 'page.frames:false — the tab was not painting in the person\'s Chrome';
+    // NOT CONNECTED IS ITS OWN REASON. The refusal text below (`noBrowserHere`) contains the word
+    // "attached", which UNPAINTED matched, so a session whose extension had not dialled yet was told
+    // its DEBUGGER was blocked (2026-09-23, alibaba.com). Switching is still right — a companion is
+    // exactly what answers when no person's browser is here — but the why has to say so.
+    if (msg && /^No browser connected here/.test(msg)) return 'no browser is connected to this server — the person\'s Chrome has not attached (reload the extension); the companion answered instead';
+    if (msg && UNPAINTED.test(msg)) return `the op threw about the debugger in the person's Chrome: ${msg.slice(0, SNIPPET_CHARS)}`;
+    return '';
+  }
+  if (out?.challenge) return `the site showed a check (${out.challenge}) to a browser with no session`;
+  if (out?.arrived === false && out?.gate) return `login bounce (${out.gate}) — the page wants the person's session`;
+  if (out?.url && args?.url && heldBack(out.url, args.url)) return 'login bounce — the site held the destination to return to, so it wants the person\'s session';
+  if (msg && WANTS_PERSON.test(msg)) return `the op threw about signing in: ${msg.slice(0, SNIPPET_CHARS)}`;
+  return '';
+}
+
+
+// Where the page is, for the browser that has to open it: the call's own url, else what the loop
+// tracker last saw this tab at, else the browser that holds the tab is asked.
+async function urlOfTab(where, args, out) {
+  if (args?.url) return String(args.url);
+  if (out?.url && /^https?:/i.test(String(out.url))) return String(out.url);
+  const tabId = Number(args?.tabId);
+  if (!tabId) return '';
+  const known = loops.get(tabId)?.at;
+  if (known) return known;
+  const seen = await ask('tabs.list', {}, ASK_QUICK_MS, where).catch(() => null);
+  return String((seen?.tabs || []).find((t) => Number(t.tabId) === tabId)?.url || '');
+}
+
+// The same op, once more, in the other browser. Returns the reply with `switched` on it.
+async function switchTo(name, op, args, from, to, out, why, ms) {
+  const url = await urlOfTab(from, args, out);
+  if (to === 'companion') {
+    await companionEnsure();
+    for (const o of new Set([originOf(url), ...originsOf(args)].filter(Boolean))) await companionGrant(o);
+  }
+  const needsTab = name === 'tab_here' || (args?.tabId !== undefined && args?.tabId !== null);
+  let tabId;
+  if (needsTab) {
+    if (!/^https?:/i.test(url)) throw new Error(`could not switch to the ${to}: the page's url is unknown (${why}). Pass url, or read it from tabs_list first.`);
+    const opened = await ask('tab.open', { url }, ASK_OPEN_MS, to);
+    own(to, opened);
+    tabId = opened.tabId;
+    // tab_here IS the open — re-navigating the tab just opened would load the page twice.
+    if (name === 'tab_here') return { ...opened, switched: { from, to, why, tabId } };
+  }
+  const again = { ...args };
+  delete again.where;
+  if (needsTab) again.tabId = tabId;
+  const reply = await ask(op, again, ms, to);
+  own(to, reply);
+  if (reply && typeof reply === 'object' && !Array.isArray(reply)) {
+    reply.switched = { from, to, why, ...(tabId !== undefined ? { tabId } : {}) };
+  }
+  return reply;
+}
+
+// One ask, one possible switch. When the other browser is called for and cannot be had, the
+// original answer stands with a hint saying so — rules 4-5 are then skipped, never faked.
+async function routed(name, op, args, where, ms) {
+  let out; let threw = null;
+  try { out = await ask(op, args, ms, where); } catch (e) { threw = e; }
+  own(where, out);
+  const why = switchWhy(name, where, out, threw, args);
+  if (!why) { if (threw) throw threw; return { out, where }; }
+  const to = where === 'person' ? 'companion' : 'person';
+  try {
+    return { out: await switchTo(name, op, args, where, to, out, why, ms), where: to };
+  } catch (e) {
+    const note = `${why}; the ${to} was tried and could not answer: ${String(e?.message || e).slice(0, FAIL_WHY_MAX_CHARS)}`;
+    if (threw) throw new Error(`${threw.message}\n\n${note}`);
+    if (out && typeof out === 'object' && !Array.isArray(out)) out.hint = `${out.hint ? `${out.hint}\n` : ''}${note}`;
+    return { out, where };
+  }
+}
+
 async function call(name, args) {
+  // WHAT THE SURFACE ANSWERS BY ITSELF, BEFORE ANY OF THE MACHINERY BELOW. An argument the tool does
+  // not define is refused with the accepted names instead of being dropped on the way to the browser
+  // (`list_extract {page: 3}` used to run an unbounded walk and call it success); `results` with
+  // `saveTo` pages the table into a file here; `results action:"guide"` needs no browser at all. The
+  // logic lives in tools.mjs `PRE` so this file — mirrored byte-for-byte — holds one call site.
+  const pre = await surface.PRE?.(name, args, ask);
+  if (pre?.refuse) throw new Error(pre.refuse);
+  if (pre?.reply) return asResult(pre.reply, name);
   // THE ONE TOOL THAT NEVER TOUCHES THE BROWSER. Every other name below becomes a browser op and
   // rides `ask()` over the paired socket — that is what the rest of this function is for. This one
   // is a single HTTPS call to a public X endpoint, answerable whether or not Chrome is even open,
@@ -1070,9 +1544,20 @@ async function call(name, args) {
       + 'fewer rows, or read a different path. Any change to the arguments clears this.');
   }
 
+  // RULES 1-3: the owner of any id named, else the explicit `where`, else the person. `where` is the
+  // server's word and never reaches the browser.
+  const sent = { ...(args || {}) };
+  delete sent.where;
+  let where = ownerOf(args) || String(args?.where || 'person');
+  if (where !== 'person' && where !== 'companion') throw new Error(`where must be "person" or "companion" — got ${JSON.stringify(args.where)}`);
+  if (where === 'companion') {
+    await companionEnsure();
+    // An explicit ask consents the call's own origins in the companion, the way a switch does.
+    for (const o of originsOf(args)) await companionGrant(o);
+  }
   let out;
   try {
-    out = await ask(op, args || {}, surface.timeoutFor(name));
+    ({ out, where } = await routed(name, op, sent, where, surface.timeoutFor(name)));
   } catch (e) {
     const msg = String(e?.message || e);
     // AN OLD EXTENSION AGAINST A NEW SERVER, SAID PLAINLY.
@@ -1098,12 +1583,12 @@ async function call(name, args) {
     }
     const gone = /there is no tab/i.test(msg);
     // A tab that vanished is transient — the caller reopens or repoints and tries again.
-    if (!gone) { if (DETERMINISTIC.test(msg)) rememberFailure(key, msg.slice(0, 300)); throw e; }
+    if (!gone) { if (DETERMINISTIC.test(msg)) rememberFailure(key, msg.slice(0, FAIL_WHY_MAX_CHARS)); throw e; }
     let open = [];
     let pinned = null;
     try {
-      const seen = await ask('tabs.list', {}, 10000);
-      open = (seen?.tabs || []).map((t) => `${t.tabId} ${t.title || t.url || ''}`.slice(0, 90));
+      const seen = await ask('tabs.list', {}, ASK_QUICK_MS, where);
+      open = (seen?.tabs || []).map((t) => `${t.tabId} ${t.title || t.url || ''}`.slice(0, TAB_LINE_CHARS));
       pinned = seen?.pinned ?? null;
     } catch (_) { /* the browser is gone too; the original message still stands */ }
     throw new Error(`${e.message}\n\n`
@@ -1131,16 +1616,18 @@ async function call(name, args) {
   // sentence there made one field mean two things depending on which tool answered, and quietly
   // suppressed the hint on exactly the paginated replies where it matters most. Caught on the
   // first live call after wiring it, which is what live calls are for.
-  if (out && typeof out === 'object' && !Array.isArray(out) && !out.error && out.hint == null) {
+  // A `switched` reply gets its line even beside an extension hint — which browser answered is the
+  // one fact the extension cannot know; NEXT keeps the extension's words under it.
+  if (out && typeof out === 'object' && !Array.isArray(out) && !out.error && (out.hint == null || out.switched)) {
     try {
-      const edge = surface.NEXT?.[name]?.(out);
+      const edge = surface.NEXT?.[name]?.(out, args);
       if (edge) out.hint = edge;
     } catch (_) { /* a hint that throws must never cost the caller their result */ }
   }
   const res = asResult(out, name);
   // REPLY_TOO_BIG comes back as an error-shaped RESULT, not a throw, so it needs recording here
   // or the identical call is free to repeat forever — which is exactly what happened.
-  if (res.isError) rememberFailure(key, String(res.content?.[0]?.text || '').slice(0, 300));
+  if (res.isError) rememberFailure(key, String(res.content?.[0]?.text || '').slice(0, FAIL_WHY_MAX_CHARS));
   return res;
 }
 
@@ -1154,30 +1641,34 @@ function hello(msg, reply) {
   // THE EXTENSION MAY ALREADY BE CONNECTED. `initialize` is the agent talking to THIS process over
   // stdio — nothing to do with the browser socket — so if one is already attached, tell it who just
   // showed up rather than waiting for its next reconnect to find out.
-  if (live) { try { live.write(frame(JSON.stringify({ type: 'identity', session: SESSION, client: CLIENT_INFO }))); } catch (_) {} }
+  for (const b of Object.values(browsers)) {
+    if (b.sock) { try { b.sock.write(frame(JSON.stringify({ type: 'identity', session: SESSION, client: CLIENT_INFO }))); } catch (_) {} }
+  }
   reply({
-    protocolVersion: msg.params?.protocolVersion || '2025-06-18',
+    protocolVersion: msg.params?.protocolVersion || MCP_PROTOCOL_VERSION,
     // listChanged, because the watcher below can genuinely send one. Declaring it without meaning
     // it would be worse than silence: a client would trust a notification that never arrives.
-    capabilities: { tools: { listChanged: true } },
+    // `resources` is the long doctrine, on demand — see `GUIDE` below.
+    capabilities: { tools: { listChanged: true }, resources: {} },
     serverInfo: { name: 'holoscrape', version: VERSION },
-    // THE OPERATING MANUAL RIDES THE HANDSHAKE. A tool description can only say what ONE tool is
-    // for; the facts that cost whole sessions are cross-cutting — which layer to read second, that
-    // a cached tool list hides new tools, that a new tab litters, that a virtualized list recycles
-    // rather than ends. There is nowhere else to put them that reaches a stranger's machine, and a
-    // client that ignores `instructions` is no worse off than before.
+    // ONLY THE BRIEF RIDES THE HANDSHAKE. The whole manual used to: 27,561 chars, of which Claude
+    // Code keeps about the first 2,300 — so 18 of its 19 sections reached nobody while every session
+    // paid for them. BRIEF is what must be known before a first call and how to fetch the rest; the
+    // doctrine is served on demand (`GUIDE` below, and results action:"guide" in tools.mjs). The
+    // whole string stays under 2,000 chars so it survives that cut intact —
+    // test/mcp-surface-budget.mjs holds it there.
     //
     // THE BUILD IDENTITY IS APPENDED, and it is the cheapest fix for the worst failure this server
     // has. A client caches the tool list when the session starts; edit this package and the running
-    // process is a version nobody can see. An agent that is TOLD it should be holding 18 tools, and
-    // counts 14, knows in one step that the answer is a reconnect and not a workaround. Without
+    // process is a version nobody can see. An agent that is TOLD it should be holding 10 tools, and
+    // counts 7, knows in one step that the answer is a reconnect and not a workaround. Without
     // that line the only symptom is a tool that "does not exist", which is indistinguishable from
     // one that was never built — and a session was lost to exactly that.
-    instructions: `${INSTRUCTIONS}\n\n# This build\n\nholoscrape-mcp ${VERSION}, serving `
-      + `${surface.TOOLS.length} tools: ${surface.TOOLS.map((t) => t.name).join(', ')}.\n`
-      + `If your tool list is missing any of these, it was cached before this server started — `
-      + `reconnect the MCP server rather than working around the gap. Paths on an existing tool `
-      + `(see page_state) are reachable either way.`,
+    // The companion sentence rides only when the companion is on: a line about a browser that does
+    // not exist in this session is the kind of unconditional text the diet removed.
+    instructions: `${BRIEF}${COMPANION_ON ? `\n\n${BRIEF_COMPANION}` : ''}\n\nholoscrape-mcp ${VERSION}, ${surface.TOOLS.length} tools: `
+      + `${surface.TOOLS.map((t) => t.name).join(', ')}. If your tool list is missing any of these it `
+      + 'was cached before this server started: reconnect the MCP server rather than working around the gap.',
   });
   // Armed after the handshake rather than at startup, so a `--code` run or a crashed client never
   // leaves a file watcher behind.
@@ -1245,7 +1736,7 @@ async function callTool(msg, reply) {
       browserMs: browserMs.spent - spent0,
       argsBytes: JSON.stringify(args).length,
       replyBytes: String(text).length,
-      ...(failed ? { failed: String(failed).slice(0, 120) } : {}),
+      ...(failed ? { failed: String(failed).slice(0, SNIPPET_CHARS) } : {}),
     });
     reply(out);
   };
@@ -1259,6 +1750,10 @@ async function callTool(msg, reply) {
   }
 }
 
+const GUIDE = { uri: 'holoscrape://guide', name: 'HoloScrape operating guide', mimeType: 'text/markdown',
+  description: 'The full doctrine, organised by situation: page readiness, counting lists, harvesting, '
+    + 'page_state pseudo-paths, what to do when a site pushes back. Also results action:"guide".' };
+
 // A lookup rather than a switch: one named function per method, and adding one is adding a line
 // here instead of another `case` in a block that only grows.
 const METHODS = {
@@ -1268,6 +1763,14 @@ const METHODS = {
   'notifications/initialized': () => {},
   'tools/list': (_msg, reply) => reply({ tools: surface.TOOLS }),
   'tools/call': callTool,
+  // THE DOCTRINE, WHOLE, FOR A CLIENT THAT READS RESOURCES. One resource, so there is nothing to
+  // page and nothing to template. A client without resource support reaches the same text a section
+  // at a time through results action:"guide"; one that loads skills has it as skill/SKILL.md.
+  'resources/list': (_msg, reply) => reply({ resources: [GUIDE] }),
+  'resources/read': (msg, reply) => {
+    if (msg.params?.uri !== GUIDE.uri) throw new Error(`no such resource: ${msg.params?.uri} — this server has one, ${GUIDE.uri}`);
+    reply({ contents: [{ uri: GUIDE.uri, mimeType: GUIDE.mimeType, text: INSTRUCTIONS }] });
+  },
   ping: (_msg, reply) => reply({}),
 };
 
@@ -1297,7 +1800,7 @@ function watchTools() {
     fs.watch(file, () => {
       // fs.watch fires more than once for a single save on most platforms; collapse the burst.
       const now = Date.now();
-      if (now - last < 300) return;
+      if (now - last < RELOAD_DEBOUNCE_MS) return;
       last = now;
       setTimeout(async () => {
         try {
@@ -1309,12 +1812,13 @@ function watchTools() {
           surface.SLOW = fresh.SLOW;
           surface.timeoutFor = fresh.timeoutFor;
           surface.NEXT = fresh.NEXT;
+          surface.PRE = fresh.PRE;
           send({ jsonrpc: '2.0', method: 'notifications/tools/list_changed' });
           say(`tools reloaded: ${before} -> ${fresh.TOOLS.length}`);
         } catch (e) {
           say(`tools reload failed, keeping the previous surface: ${e.message || e}`);
         }
-      }, 60);   // let the editor finish writing before reading it back
+      }, RELOAD_SETTLE_MS);   // let the editor finish writing before reading it back
     });
   } catch (_) { /* not watchable — an installed copy never changes anyway */ }
 }
@@ -1326,8 +1830,8 @@ async function dispatch(msg) {
     if (msg.id !== undefined) send({ jsonrpc: '2.0', id: msg.id, error: { code, message } });
   };
   const handler = METHODS[msg.method];
-  if (!handler) return fail(-32601, `unknown method: ${msg.method}`);
-  try { await handler(msg, reply); } catch (e) { fail(-32603, String(e.message || e)); }
+  if (!handler) return fail(RPC_METHOD_NOT_FOUND, `unknown method: ${msg.method}`);
+  try { await handler(msg, reply); } catch (e) { fail(RPC_INTERNAL_ERROR, String(e.message || e)); }
 }
 
 function parse(one) {
@@ -1365,7 +1869,7 @@ process.stdin.on('data', async (chunk) => {
 // then reading a fact instead of an intention.
 srv.once('listening', () => {
   MINE.at = srv.address()?.port || 0;
-  say(`listening on 127.0.0.1:${MINE.at}`);
+  say(`${VERSION} listening on ${LOOPBACK_HOST}:${MINE.at}`);
   say('');
   say(`  pairing code:  ${PAIR}`);
   say('');
@@ -1396,8 +1900,13 @@ function listen(i = 0) {
     return;
   }
   srv.once('error', (e) => (e.code === 'EADDRINUSE' ? listen(i + 1) : (say(String(e.message)), process.exit(1))));
-  srv.listen(PORT_BASE + i, '127.0.0.1');
+  srv.listen(PORT_BASE + i, LOOPBACK_HOST);
 }
 listen();
 
-for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { srv.close(); process.exit(0); });
+// The companion's profile and temp build go with the process: a headless Chromium nobody can see
+// must never outlive the server that launched it, and a profile left behind is a directory of
+// somebody else's page content.
+for (const sig of ['SIGINT', 'SIGTERM']) {
+  process.on(sig, () => { srv.close(); closeCompanion().then(() => process.exit(0), () => process.exit(0)); });
+}
